@@ -37,16 +37,24 @@ def verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
 
 
 def run_agent_and_reply(question: str, response_url: str, user_name: str):
-    from src.agent.ops_agent import run_agent
+    import traceback
+    print(f"[agent] starting for: {question}", flush=True)
     try:
+        from src.agent.ops_agent import run_agent
         answer = run_agent(question)
+        print(f"[agent] completed, answer length: {len(answer)}", flush=True)
     except Exception as e:
         answer = f"Sorry, something went wrong: {e}"
+        print(f"[agent] ERROR: {traceback.format_exc()}", flush=True)
 
-    requests.post(response_url, json={
-        "response_type": "in_channel",
-        "text": f"*{user_name} asked:* {question}\n\n{answer}",
-    })
+    try:
+        resp = requests.post(response_url, json={
+            "response_type": "in_channel",
+            "text": f"*{user_name} asked:* {question}\n\n{answer}",
+        })
+        print(f"[agent] posted to Slack: {resp.status_code}", flush=True)
+    except Exception as e:
+        print(f"[agent] failed to post to Slack: {e}", flush=True)
 
 
 @app.post("/slack/ops")

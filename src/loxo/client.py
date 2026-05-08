@@ -27,7 +27,7 @@ class LoxoClient:
             raise RuntimeError(f"Missing env var: {config['api_key_env']}")
         self.instance = instance
         self.agency_id = config["agency_id"]
-        self.base_url = f"{LOXO_DOMAIN}/api/agencies/{self.agency_id}/"
+        self.base_url = f"{LOXO_DOMAIN}/api/{self.agency_id}/"
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {api_key}"})
 

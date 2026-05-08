@@ -27,7 +27,7 @@ Rules:
 - Be concise — bullet points, numbers, names, dates. No preamble.
 - Flag stale items (no activity > 14 days) with a warning.
 - Never ask clarifying questions — make reasonable assumptions and answer immediately.
-- When reporting candidates on a job, list EVERY candidate with their exact stage name or stage ID. Never guess or infer which candidate is placed — read the stage field directly from the data. The candidate in the highest/placed stage is whoever the data explicitly shows there.
+- When asked about candidates on a job, always call get_loxo_job_stages first to get stage names, then get_loxo_job_candidates. Group candidates by stage name and only list candidates in the relevant stage (e.g. just "Placed" candidates if asked who was placed).
 
 Today's date: {today}
 """
@@ -68,15 +68,25 @@ TOOLS = [
         },
     },
     {
+        "name": "get_loxo_job_stages",
+        "description": "Get the pipeline stage definitions for a Loxo job. Call this first to map stage IDs to stage names (e.g. Placed, Initial Interview) before reporting on candidates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "instance": {"type": "string", "enum": ["staffing", "leadership"]},
+                "job_id": {"type": "integer"},
+            },
+            "required": ["instance", "job_id"],
+        },
+    },
+    {
         "name": "get_loxo_job_candidates",
-        "description": "Get all candidates on a specific Loxo job/search.",
+        "description": "Get candidates on a specific Loxo job grouped by stage. Always call get_loxo_job_stages first so you can map stage IDs to stage names. Report candidates grouped by stage name, not raw IDs.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "instance": {"type": "string", "enum": ["staffing", "leadership"]},
                 "job_id": {"type": "integer", "description": "Loxo job ID"},
-                "page": {"type": "integer", "default": 1},
-                "per_page": {"type": "integer", "default": 50},
             },
             "required": ["instance", "job_id"],
         },
@@ -167,9 +177,13 @@ def execute_tool(name: str, inputs: dict) -> Any:
                     results[url] = f"ERROR: {e}"
         return results
 
+    if name == "get_loxo_job_stages":
+        loxo = LoxoClient(instance=inputs["instance"])
+        return loxo.get_job_stages(inputs["job_id"])
+
     if name == "get_loxo_job_candidates":
         loxo = LoxoClient(instance=inputs["instance"])
-        return loxo.get_job_candidates(inputs["job_id"], inputs.get("page", 1), inputs.get("per_page", 50))
+        return loxo.get_job_candidates(inputs["job_id"])
 
     if name == "get_monday_deals":
         monday = MondayClient()

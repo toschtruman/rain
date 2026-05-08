@@ -54,5 +54,8 @@ class LoxoClient:
     def get_job_candidates(self, job_id: int, page: int = 1, per_page: int = 25) -> dict:
         return self._get(f"jobs/{job_id}/candidates")
 
+    def get_job_stages(self, job_id: int) -> dict:
+        return self._get(f"jobs/{job_id}/stages")
+
     def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
         return self._get("people", {"q": query, "page": page, "per_page": per_page})

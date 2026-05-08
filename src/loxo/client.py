@@ -29,7 +29,7 @@ class LoxoClient:
         self.slug = config["slug"]
         self.base_url = LOXO_BASE_URL.format(slug=self.slug)
         self.session = requests.Session()
-        self.session.headers.update({"Authorization": f"Token {api_key}"})
+        self.session.headers.update({"Authorization": f"Bearer {api_key}"})
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
         url = self.base_url + path.lstrip("/")
@@ -45,17 +45,22 @@ class LoxoClient:
         return self._get(f"candidates/{candidate_id}")
 
     def get_jobs(self, page: int = 1, per_page: int = 25, **filters) -> dict:
-        # Try both common Loxo endpoint names
-        result = self._get("jobs", {"page": page, "per_page": per_page, **filters})
-        if "error" in result:
-            result = self._get("searches", {"page": page, "per_page": per_page, **filters})
+        # Loxo uses job_orders as the primary endpoint
+        for path in ("job_orders", "jobs", "searches"):
+            result = self._get(path, {"page": page, "per_page": per_page, **filters})
+            if "error" not in result:
+                return result
         return result
 
     def get_job(self, job_id: int) -> dict:
-        return self._get(f"jobs/{job_id}")
+        return self._get(f"job_orders/{job_id}")
 
     def get_job_candidates(self, job_id: int, page: int = 1, per_page: int = 25) -> dict:
-        return self._get(f"jobs/{job_id}/candidates", {"page": page, "per_page": per_page})
+        for path in (f"job_orders/{job_id}/candidates", f"jobs/{job_id}/candidates"):
+            result = self._get(path, {"page": page, "per_page": per_page})
+            if "error" not in result:
+                return result
+        return result
 
     def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
         return self._get("candidates", {"q": query, "page": page, "per_page": per_page})

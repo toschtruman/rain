@@ -185,9 +185,10 @@ def execute_tool(name: str, inputs: dict) -> Any:
     raise ValueError(f"Unknown tool: {name}")
 
 
-def run_agent(user_message: str, max_turns: int = 10) -> str:
+def run_agent(user_message: str, max_turns: int = 10, history: list = None) -> str:
     client = anthropic.Anthropic()
-    messages = [{"role": "user", "content": user_message}]
+    prior = history or []
+    messages = prior + [{"role": "user", "content": user_message}]
     system = SYSTEM_PROMPT.format(today=datetime.now().strftime("%Y-%m-%d"))
 
     for _ in range(max_turns):

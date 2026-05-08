@@ -82,6 +82,17 @@ TOOLS = [
         },
     },
     {
+        "name": "probe_loxo_endpoints",
+        "description": "Diagnostic tool: probe which Loxo API endpoints exist and return data. Use this when other Loxo tools return 404 errors to discover the correct endpoint paths.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "instance": {"type": "string", "enum": ["staffing", "leadership"]},
+            },
+            "required": ["instance"],
+        },
+    },
+    {
         "name": "get_monday_deals",
         "description": "Get deals from Monday.com CRM, grouped by pipeline stage.",
         "input_schema": {
@@ -125,6 +136,22 @@ def execute_tool(name: str, inputs: dict) -> Any:
     if name == "get_loxo_jobs":
         loxo = LoxoClient(instance=inputs["instance"])
         return loxo.get_jobs(inputs.get("page", 1), inputs.get("per_page", 25))
+
+    if name == "probe_loxo_endpoints":
+        loxo = LoxoClient(instance=inputs["instance"])
+        candidates = [
+            "jobs", "job_orders", "searches", "requisitions", "openings",
+            "positions", "placements", "people", "candidates", "persons",
+        ]
+        results = {}
+        for path in candidates:
+            r = loxo._get(path, {"page": 1, "per_page": 1})
+            if "_http_error" in r:
+                results[path] = f"HTTP {r['_http_error']}"
+            else:
+                keys = list(r.keys())[:5]
+                results[path] = f"OK — keys: {keys}"
+        return results
 
     if name == "get_loxo_job_candidates":
         loxo = LoxoClient(instance=inputs["instance"])

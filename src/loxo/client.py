@@ -39,10 +39,18 @@ class LoxoClient:
         return resp.json()
 
     def get_candidates(self, page: int = 1, per_page: int = 25, **filters) -> dict:
-        return self._get("candidates", {"page": page, "per_page": per_page, **filters})
+        for path in ("people", "candidates", "persons"):
+            result = self._get(path, {"page": page, "per_page": per_page, **filters})
+            if "_http_error" not in result:
+                return result
+        return result
 
     def get_candidate(self, candidate_id: int) -> dict:
-        return self._get(f"candidates/{candidate_id}")
+        for path in (f"people/{candidate_id}", f"candidates/{candidate_id}"):
+            result = self._get(path)
+            if "_http_error" not in result:
+                return result
+        return result
 
     def get_jobs(self, page: int = 1, per_page: int = 25, **filters) -> dict:
         for path in ("jobs", "job_orders", "searches"):

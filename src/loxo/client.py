@@ -3,15 +3,15 @@ import requests
 from typing import Optional
 
 
-LOXO_BASE_URL = "https://app.loxo.co/api/{slug}/"
+LOXO_DOMAIN = "https://rain-global.app.loxo.co"
 
 INSTANCES = {
     "staffing": {
-        "slug": "rain-staffing",
+        "agency_id": 43483,
         "api_key_env": "LOXO_RAIN_STAFFING_API_KEY",
     },
     "leadership": {
-        "slug": "rain-leadership",
+        "agency_id": 42823,
         "api_key_env": "LOXO_RAIN_LEADERSHIP_API_KEY",
     },
 }
@@ -26,8 +26,8 @@ class LoxoClient:
         if not api_key:
             raise RuntimeError(f"Missing env var: {config['api_key_env']}")
         self.instance = instance
-        self.slug = config["slug"]
-        self.base_url = LOXO_BASE_URL.format(slug=self.slug)
+        self.agency_id = config["agency_id"]
+        self.base_url = f"{LOXO_DOMAIN}/api/agencies/{self.agency_id}/"
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {api_key}"})
 
@@ -39,18 +39,10 @@ class LoxoClient:
         return resp.json()
 
     def get_candidates(self, page: int = 1, per_page: int = 25, **filters) -> dict:
-        for path in ("people", "candidates", "persons"):
-            result = self._get(path, {"page": page, "per_page": per_page, **filters})
-            if "_http_error" not in result:
-                return result
-        return result
+        return self._get("people", {"page": page, "per_page": per_page, **filters})
 
     def get_candidate(self, candidate_id: int) -> dict:
-        for path in (f"people/{candidate_id}", f"candidates/{candidate_id}"):
-            result = self._get(path)
-            if "_http_error" not in result:
-                return result
-        return result
+        return self._get(f"people/{candidate_id}")
 
     def get_jobs(self, page: int = 1, per_page: int = 25, **filters) -> dict:
         for path in ("jobs", "job_orders", "searches"):
@@ -63,14 +55,7 @@ class LoxoClient:
         return self._get(f"jobs/{job_id}")
 
     def get_job_candidates(self, job_id: int, page: int = 1, per_page: int = 25) -> dict:
-        for path in (f"jobs/{job_id}/candidates", f"job_orders/{job_id}/candidates"):
-            result = self._get(path, {"page": page, "per_page": per_page})
-            if "_http_error" not in result:
-                return result
-        return result
+        return self._get(f"jobs/{job_id}/people", {"page": page, "per_page": per_page})
 
     def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
-        return self._get("candidates", {"q": query, "page": page, "per_page": per_page})
-
-    def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
-        return self._get("candidates", {"q": query, "page": page, "per_page": per_page})
+        return self._get("people", {"q": query, "page": page, "per_page": per_page})

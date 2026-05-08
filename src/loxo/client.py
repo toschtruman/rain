@@ -35,7 +35,7 @@ class LoxoClient:
         url = self.base_url + path.lstrip("/")
         resp = self.session.get(url, params=params or {})
         if not resp.ok:
-            return {"error": resp.status_code, "detail": resp.text, "url": url}
+            return {"_http_error": resp.status_code, "detail": resp.text[:200], "url": url}
         return resp.json()
 
     def get_candidates(self, page: int = 1, per_page: int = 25, **filters) -> dict:
@@ -45,22 +45,24 @@ class LoxoClient:
         return self._get(f"candidates/{candidate_id}")
 
     def get_jobs(self, page: int = 1, per_page: int = 25, **filters) -> dict:
-        # Loxo uses job_orders as the primary endpoint
-        for path in ("job_orders", "jobs", "searches"):
+        for path in ("jobs", "job_orders", "searches"):
             result = self._get(path, {"page": page, "per_page": per_page, **filters})
-            if "error" not in result:
+            if "_http_error" not in result:
                 return result
         return result
 
     def get_job(self, job_id: int) -> dict:
-        return self._get(f"job_orders/{job_id}")
+        return self._get(f"jobs/{job_id}")
 
     def get_job_candidates(self, job_id: int, page: int = 1, per_page: int = 25) -> dict:
-        for path in (f"job_orders/{job_id}/candidates", f"jobs/{job_id}/candidates"):
+        for path in (f"jobs/{job_id}/candidates", f"job_orders/{job_id}/candidates"):
             result = self._get(path, {"page": page, "per_page": per_page})
-            if "error" not in result:
+            if "_http_error" not in result:
                 return result
         return result
+
+    def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
+        return self._get("candidates", {"q": query, "page": page, "per_page": per_page})
 
     def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
         return self._get("candidates", {"q": query, "page": page, "per_page": per_page})

@@ -34,7 +34,8 @@ class LoxoClient:
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
         url = self.base_url + path.lstrip("/")
         resp = self.session.get(url, params=params or {})
-        resp.raise_for_status()
+        if not resp.ok:
+            return {"error": resp.status_code, "detail": resp.text, "url": url}
         return resp.json()
 
     def get_candidates(self, page: int = 1, per_page: int = 25, **filters) -> dict:
@@ -44,7 +45,11 @@ class LoxoClient:
         return self._get(f"candidates/{candidate_id}")
 
     def get_jobs(self, page: int = 1, per_page: int = 25, **filters) -> dict:
-        return self._get("jobs", {"page": page, "per_page": per_page, **filters})
+        # Try both common Loxo endpoint names
+        result = self._get("jobs", {"page": page, "per_page": per_page, **filters})
+        if "error" in result:
+            result = self._get("searches", {"page": page, "per_page": per_page, **filters})
+        return result
 
     def get_job(self, job_id: int) -> dict:
         return self._get(f"jobs/{job_id}")

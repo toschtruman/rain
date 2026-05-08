@@ -138,19 +138,33 @@ def execute_tool(name: str, inputs: dict) -> Any:
         return loxo.get_jobs(inputs.get("page", 1), inputs.get("per_page", 25))
 
     if name == "probe_loxo_endpoints":
-        loxo = LoxoClient(instance=inputs["instance"])
-        candidates = [
-            "jobs", "job_orders", "searches", "requisitions", "openings",
-            "positions", "placements", "people", "candidates", "persons",
+        import requests as req
+        config = {"staffing": (43483, "LOXO_RAIN_STAFFING_API_KEY"), "leadership": (42823, "LOXO_RAIN_LEADERSHIP_API_KEY")}
+        agency_id, key_env = config[inputs["instance"]]
+        api_key = os.environ.get(key_env, "")
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        base_urls = [
+            f"https://rain-global.app.loxo.co/api/{agency_id}/",
+            f"https://rain-global.app.loxo.co/api/agencies/{agency_id}/",
+            f"https://app.loxo.co/api/rain-global/",
+            f"https://rain-global.app.loxo.co/api/rain-global/",
+            f"https://rain-global.app.loxo.co/api/v1/{agency_id}/",
+            f"https://rain-global.app.loxo.co/api/v1/agencies/{agency_id}/",
         ]
+        endpoints = ["people", "jobs", "candidates"]
+
         results = {}
-        for path in candidates:
-            r = loxo._get(path, {"page": 1, "per_page": 1})
-            if "_http_error" in r:
-                results[path] = f"HTTP {r['_http_error']}"
-            else:
-                keys = list(r.keys())[:5]
-                results[path] = f"OK — keys: {keys}"
+        for base in base_urls:
+            for ep in endpoints:
+                url = base + ep
+                try:
+                    r = req.get(url, headers=headers, params={"page": 1, "per_page": 1}, timeout=5)
+                    results[url] = f"HTTP {r.status_code}"
+                    if r.ok:
+                        results[url] += f" — keys: {list(r.json().keys())[:4]}"
+                except Exception as e:
+                    results[url] = f"ERROR: {e}"
         return results
 
     if name == "get_loxo_job_candidates":

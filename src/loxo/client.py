@@ -3,15 +3,13 @@ import requests
 from typing import Optional
 
 
-LOXO_DOMAIN = "https://rain-global.app.loxo.co"
-
 INSTANCES = {
     "staffing": {
-        "agency_id": 43483,
+        "base_url": "https://rain-global.app.loxo.co/api/rain-global/",
         "api_key_env": "LOXO_RAIN_STAFFING_API_KEY",
     },
     "leadership": {
-        "agency_id": 42823,
+        "base_url": "https://rain.app.loxo.co/api/rain/",
         "api_key_env": "LOXO_RAIN_LEADERSHIP_API_KEY",
     },
 }
@@ -26,8 +24,7 @@ class LoxoClient:
         if not api_key:
             raise RuntimeError(f"Missing env var: {config['api_key_env']}")
         self.instance = instance
-        self.agency_id = config["agency_id"]
-        self.base_url = f"{LOXO_DOMAIN}/api/{self.agency_id}/"
+        self.base_url = config["base_url"]
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {api_key}"})
 

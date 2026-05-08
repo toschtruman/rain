@@ -14,6 +14,9 @@ INSTANCES = {
     },
 }
 
+# Module-level stage cache: {instance: {stage_id: stage_name}}
+_stage_cache: dict = {}
+
 
 class LoxoClient:
     def __init__(self, instance: str = "staffing"):
@@ -35,6 +38,20 @@ class LoxoClient:
             return {"_http_error": resp.status_code, "detail": resp.text[:200], "url": url}
         return resp.json()
 
+    def _stage_map(self, job_id: int) -> dict:
+        """Return {stage_id: stage_name}, fetching once per instance and caching."""
+        if self.instance not in _stage_cache:
+            raw = self._get(f"jobs/{job_id}/stages")
+            if "_http_error" not in raw:
+                stages = raw if isinstance(raw, list) else raw.get("stages", raw.get("data", []))
+                _stage_cache[self.instance] = {
+                    str(s.get("id", "")): s.get("name", str(s.get("id", "")))
+                    for s in stages if isinstance(s, dict)
+                }
+            else:
+                return {}
+        return _stage_cache.get(self.instance, {})
+
     def get_candidates(self, page: int = 1, per_page: int = 25, **filters) -> dict:
         return self._get("people", {"page": page, "per_page": per_page, **filters})
 
@@ -51,11 +68,22 @@ class LoxoClient:
     def get_job(self, job_id: int) -> dict:
         return self._get(f"jobs/{job_id}")
 
-    def get_job_candidates(self, job_id: int, page: int = 1, per_page: int = 25) -> dict:
-        return self._get(f"jobs/{job_id}/candidates")
+    def get_job_candidates(self, job_id: int) -> dict:
+        raw = self._get(f"jobs/{job_id}/candidates")
+        if "_http_error" in raw:
+            return raw
 
-    def get_job_stages(self, job_id: int) -> dict:
-        return self._get(f"jobs/{job_id}/stages")
+        stage_map = self._stage_map(job_id)
+        candidates = raw if isinstance(raw, list) else raw.get("candidates", raw.get("data", []))
+
+        # Enrich each candidate with a human-readable stage name
+        for c in candidates:
+            if isinstance(c, dict):
+                sid = str(c.get("stage_id", c.get("workflow_stage_id", "")))
+                if sid and stage_map:
+                    c["stage_name"] = stage_map.get(sid, sid)
+
+        return {"candidates": candidates, "total": len(candidates)}
 
     def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
         return self._get("people", {"q": query, "page": page, "per_page": per_page})

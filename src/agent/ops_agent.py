@@ -68,20 +68,8 @@ TOOLS = [
         },
     },
     {
-        "name": "get_loxo_job_stages",
-        "description": "Get the pipeline stage definitions for a Loxo job. Call this first to map stage IDs to stage names (e.g. Placed, Initial Interview) before reporting on candidates.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "instance": {"type": "string", "enum": ["staffing", "leadership"]},
-                "job_id": {"type": "integer"},
-            },
-            "required": ["instance", "job_id"],
-        },
-    },
-    {
         "name": "get_loxo_job_candidates",
-        "description": "Get candidates on a specific Loxo job grouped by stage. Always call get_loxo_job_stages first so you can map stage IDs to stage names. Report candidates grouped by stage name, not raw IDs.",
+        "description": "Get candidates on a specific Loxo job. Returns candidates with stage_name already resolved — no need to fetch stages separately. Group and filter by stage_name when answering stage-specific questions.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -176,10 +164,6 @@ def execute_tool(name: str, inputs: dict) -> Any:
                 except Exception as e:
                     results[url] = f"ERROR: {e}"
         return results
-
-    if name == "get_loxo_job_stages":
-        loxo = LoxoClient(instance=inputs["instance"])
-        return loxo.get_job_stages(inputs["job_id"])
 
     if name == "get_loxo_job_candidates":
         loxo = LoxoClient(instance=inputs["instance"])

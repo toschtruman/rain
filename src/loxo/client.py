@@ -18,6 +18,8 @@ INSTANCES = {
 
 # Module-level stage cache: {instance: {stage_id: stage_name}}
 _stage_cache: dict = {}
+# Module-level user cache: {instance: {user_id: user_name}}
+_user_cache: dict = {}
 
 
 class LoxoClient:
@@ -39,6 +41,19 @@ class LoxoClient:
         if not resp.ok:
             return {"_http_error": resp.status_code, "detail": resp.text[:200], "url": url}
         return resp.json()
+
+    def _user_map(self) -> dict:
+        """Return {user_id: user_name}, fetched once per instance and cached."""
+        if self.instance in _user_cache:
+            return _user_cache[self.instance]
+        raw = self._get("users")
+        users = raw if isinstance(raw, list) else raw.get("users", raw.get("data", []))
+        _user_cache[self.instance] = {
+            str(u.get("id", "")): u.get("name") or u.get("email") or str(u.get("id", ""))
+            for u in users if isinstance(u, dict)
+        }
+        print(f"[users] loaded {len(_user_cache[self.instance])} users for {self.instance}", flush=True)
+        return _user_cache[self.instance]
 
     def _stage_map(self, job_id: int) -> dict:
         """Return {stage_id: stage_name}, fetched once per instance and cached."""
@@ -260,6 +275,16 @@ class LoxoClient:
             if not scroll_id or (total_count is not None and len(all_events) >= total_count):
                 break
 
+        user_map = self._user_map()
+
+        # Build activity type name map
+        raw_types = self._get("activity_types")
+        types_list = raw_types if isinstance(raw_types, list) else raw_types.get("activity_types", raw_types.get("data", []))
+        activity_type_map = {
+            str(t.get("id", "")): t.get("name", "Activity")
+            for t in types_list if isinstance(t, dict)
+        }
+
         activity: dict = defaultdict(lambda: {"total": 0, "by_type": defaultdict(int)})
 
         for e in all_events:
@@ -272,20 +297,10 @@ class LoxoClient:
             if since_dt and created_dt and created_dt < since_dt:
                 continue
 
-            # Try every field name Loxo might use for the user who logged the activity
-            user = (
-                e.get("user")
-                or e.get("created_by")
-                or e.get("author")
-                or e.get("loxo_user")
-                or e.get("owner")
-                or {}
-            )
-            if isinstance(user, dict):
-                name = user.get("name") or user.get("email") or "Unknown"
-            else:
-                name = str(user) if user else "Unknown"
-            activity_type = (e.get("activity_type") or {}).get("name", "Activity")
+            user_id = str(e.get("created_by_id") or e.get("user_id") or "")
+            name = user_map.get(user_id) or "Unknown"
+            activity_type_id = str(e.get("activity_type_id") or "")
+            activity_type = activity_type_map.get(activity_type_id, "Activity")
 
             activity[name]["total"] += 1
             activity[name]["by_type"][activity_type] += 1

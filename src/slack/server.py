@@ -223,6 +223,76 @@ async def trigger_digest(request: Request):
     return {"status": "digest started"}
 
 
+@app.post("/loxo/webhook")
+async def loxo_webhook(request: Request):
+    """Receive real-time events from Loxo and post high-signal alerts to Slack."""
+    payload = await request.json()
+    print(f"[webhook] loxo event: {json.dumps(payload)[:300]}", flush=True)
+
+    event_type = payload.get("event") or payload.get("type") or payload.get("event_type", "")
+    data = payload.get("data") or payload.get("object") or payload
+
+    channel = os.environ.get("SLACK_OPS_CHANNEL_ID", "")
+    if not channel:
+        return {"ok": True}
+
+    # New placement — celebrate the win
+    if "placement" in event_type.lower() and "creat" in event_type.lower():
+        person = data.get("person") or {}
+        job = data.get("job") or {}
+        company = (job.get("company") or {}).get("name", "")
+        recruiter = (data.get("created_by") or {}).get("name", "the team")
+
+        name = person.get("name", "A candidate")
+        role = job.get("title", "a role")
+        at_company = f" at {company}" if company else ""
+
+        slack.chat_postMessage(
+            channel=channel,
+            text=f":trophy: *Placement alert!* {name} has been placed as *{role}*{at_company}. Great work, {recruiter}!",
+        )
+
+    # New job order — recruiter team needs to know
+    elif "job" in event_type.lower() and "creat" in event_type.lower():
+        title = data.get("title", "A new role")
+        company = (data.get("company") or {}).get("name", "")
+        owner = (data.get("owner") or data.get("created_by") or {}).get("name", "")
+
+        at_company = f" at {company}" if company else ""
+        owned_by = f" — owned by {owner}" if owner else ""
+
+        slack.chat_postMessage(
+            channel=channel,
+            text=f":briefcase: *New job order:* {title}{at_company}{owned_by}",
+        )
+
+    return {"ok": True}
+
+
+@app.post("/internal/register-webhooks")
+async def register_webhooks(request: Request):
+    """Register Loxo webhooks for both instances. Call once after deploy."""
+    token = request.headers.get("X-Internal-Token", "")
+    if token != os.environ.get("INTERNAL_TOKEN", ""):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from src.loxo.client import LoxoClient
+    base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if not base_url:
+        raise HTTPException(status_code=500, detail="RAILWAY_PUBLIC_DOMAIN env var not set")
+
+    target = f"https://{base_url}/loxo/webhook"
+    results = {}
+    for instance in ("staffing", "leadership"):
+        try:
+            loxo = LoxoClient(instance=instance)
+            results[instance] = loxo.register_webhooks(target)
+        except Exception as e:
+            results[instance] = {"error": str(e)}
+
+    return results
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

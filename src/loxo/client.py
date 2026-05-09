@@ -283,3 +283,34 @@ class LoxoClient:
         )
         since_label = since_dt.date().isoformat() if since_dt else "all time"
         return {"since": since_label, "activity": ranked}
+
+    def _post(self, path: str, body: dict) -> dict:
+        url = self.base_url + path.lstrip("/")
+        resp = self.session.post(url, json=body)
+        if not resp.ok:
+            return {"_http_error": resp.status_code, "detail": resp.text[:200]}
+        return resp.json()
+
+    def register_webhooks(self, target_url: str) -> list[dict]:
+        """
+        Ensure placement_created and job_created webhooks point at target_url.
+        Skips registration if a matching webhook already exists.
+        """
+        existing_raw = self._get("webhooks")
+        existing = (
+            existing_raw if isinstance(existing_raw, list)
+            else existing_raw.get("webhooks", existing_raw.get("data", []))
+        )
+        registered_urls = {w.get("url", "") for w in existing if isinstance(w, dict)}
+
+        results = []
+        for event in ("placement_created", "job_created"):
+            hook_url = f"{target_url}?event={event}"
+            if hook_url in registered_urls:
+                results.append({"event": event, "status": "already_registered"})
+                continue
+            result = self._post("webhooks", {"url": hook_url, "event": event})
+            results.append({"event": event, "status": "registered", "response": result})
+            print(f"[webhook] registered {event} → {hook_url}", flush=True)
+
+        return results

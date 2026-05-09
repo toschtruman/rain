@@ -121,7 +121,29 @@ class LoxoClient:
         return {"candidates": filtered, "total": len(filtered), "total_all": len(all_candidates)}
 
     def get_placements(self, job_id: int = None) -> dict:
-        params = {}
+        # Fetch all placements and filter client-side — job_id param may not be supported
+        all_placements = []
+        page = 1
+        while True:
+            raw = self._get("placements", {"page": page, "per_page": 50})
+            if "_http_error" in raw:
+                print(f"[placements] error: {raw}", flush=True)
+                return raw
+            batch = raw if isinstance(raw, list) else raw.get("placements", raw.get("data", []))
+            if not batch:
+                break
+            all_placements.extend(batch)
+            print(f"[placements] page {page}: {len(batch)} records, sample keys: {list(batch[0].keys())[:8] if batch else []}", flush=True)
+            if len(batch) < 50:
+                break
+            page += 1
+            if page > 10:
+                break
+
         if job_id:
-            params["job_id"] = job_id
-        return self._get("placements", params)
+            filtered = [p for p in all_placements
+                       if str(p.get("job_id", p.get("job", {}).get("id", ""))) == str(job_id)]
+            print(f"[placements] total={len(all_placements)}, matched job {job_id}: {len(filtered)}", flush=True)
+            return {"placements": filtered, "total": len(filtered)}
+
+        return {"placements": all_placements, "total": len(all_placements)}

@@ -75,30 +75,50 @@ class LoxoClient:
 
     def get_job_candidates(self, job_id: int, stage_name: str = None) -> dict:
         stage_map = self._stage_map(job_id)
-        params = {}
+        print(f"[candidates] stage_map for {self.instance}: {stage_map}", flush=True)
 
+        # Find target stage ID if filtering by name
+        target_stage_id = None
         if stage_name and stage_map:
-            # Find stage ID by name (case-insensitive partial match)
-            stage_id = next(
+            target_stage_id = next(
                 (sid for sid, sname in stage_map.items()
                  if stage_name.lower() in sname.lower()),
                 None
             )
-            if stage_id:
-                params["workflow_stage_id"] = stage_id
+            print(f"[candidates] filtering by stage '{stage_name}' → id={target_stage_id}", flush=True)
 
-        raw = self._get(f"jobs/{job_id}/candidates", params)
-        if "_http_error" in raw:
-            return raw
+        # Paginate through all candidates to find the right ones
+        all_candidates = []
+        page = 1
+        while True:
+            raw = self._get(f"jobs/{job_id}/candidates", {"page": page, "per_page": 50})
+            if "_http_error" in raw:
+                return raw
+            batch = raw if isinstance(raw, list) else raw.get("candidates", raw.get("data", []))
+            if not batch:
+                break
+            all_candidates.extend(batch)
+            if len(batch) < 50:
+                break
+            page += 1
+            if page > 20:  # safety cap
+                break
 
-        candidates = raw if isinstance(raw, list) else raw.get("candidates", raw.get("data", []))
-        for c in candidates:
+        # Enrich with stage names
+        for c in all_candidates:
             if isinstance(c, dict):
                 sid = str(c.get("workflow_stage_id", ""))
-                if sid and stage_map:
-                    c["stage_name"] = stage_map.get(sid, sid)
+                c["stage_name"] = stage_map.get(sid, sid) if stage_map else sid
 
-        return {"candidates": candidates, "total": len(candidates), "stage_filter": stage_name}
+        # Filter client-side if stage requested
+        if target_stage_id:
+            filtered = [c for c in all_candidates
+                       if str(c.get("workflow_stage_id", "")) == target_stage_id]
+        else:
+            filtered = all_candidates
+
+        print(f"[candidates] total={len(all_candidates)}, after filter={len(filtered)}", flush=True)
+        return {"candidates": filtered, "total": len(filtered), "total_all": len(all_candidates)}
 
     def get_placements(self, job_id: int = None) -> dict:
         params = {}

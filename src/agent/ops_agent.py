@@ -28,7 +28,8 @@ Response rules — strictly enforced:
 - No warnings about data limitations unless the data is actually missing
 - Only query tools relevant to the question — never pull Monday.com for Loxo questions or vice versa
 - Never ask clarifying questions — answer with best available data
-- When asked about a specific stage (e.g. "placed", "2nd interview"), return only candidates in that stage
+- When asked who was placed/hired on a job, always use get_loxo_placements — placements are stored separately from the candidate pipeline
+- When asked about a specific pipeline stage (e.g. "2nd interview", "presented to client"), use get_loxo_job_candidates and filter by stage_name
 
 Today's date: {today}
 """
@@ -78,6 +79,18 @@ TOOLS = [
                 "job_id": {"type": "integer", "description": "Loxo job ID"},
             },
             "required": ["instance", "job_id"],
+        },
+    },
+    {
+        "name": "get_loxo_placements",
+        "description": "Get placements from Loxo. Use this when asked who was placed/hired on a job — placements are stored separately from the candidate pipeline. Optionally filter by job_id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "instance": {"type": "string", "enum": ["staffing", "leadership"]},
+                "job_id": {"type": "integer", "description": "Filter placements by job ID (optional)"},
+            },
+            "required": ["instance"],
         },
     },
     {
@@ -165,6 +178,10 @@ def execute_tool(name: str, inputs: dict) -> Any:
                 except Exception as e:
                     results[url] = f"ERROR: {e}"
         return results
+
+    if name == "get_loxo_placements":
+        loxo = LoxoClient(instance=inputs["instance"])
+        return loxo.get_placements(job_id=inputs.get("job_id"))
 
     if name == "get_loxo_job_candidates":
         loxo = LoxoClient(instance=inputs["instance"])

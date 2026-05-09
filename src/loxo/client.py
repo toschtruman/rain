@@ -90,5 +90,8 @@ class LoxoClient:
 
         return {"candidates": candidates, "total": len(candidates)}
 
-    def search_candidates(self, query: str, page: int = 1, per_page: int = 25) -> dict:
-        return self._get("people", {"q": query, "page": page, "per_page": per_page})
+    def get_placements(self, job_id: int = None) -> dict:
+        params = {}
+        if job_id:
+            params["job_id"] = job_id
+        return self._get("placements", params)

@@ -250,6 +250,10 @@ class LoxoClient:
             batch = raw if isinstance(raw, list) else raw.get("person_events", raw.get("data", []))
             if not batch:
                 break
+            # Log first event structure once so we can see real field names
+            if not all_events and batch:
+                print(f"[activity] first event keys: {list(batch[0].keys())}", flush=True)
+                print(f"[activity] first event sample: {str(batch[0])[:400]}", flush=True)
             all_events.extend(batch)
             total_count = raw.get("total_count") if isinstance(raw, dict) else None
             scroll_id = raw.get("scroll_id") if isinstance(raw, dict) else None
@@ -268,8 +272,19 @@ class LoxoClient:
             if since_dt and created_dt and created_dt < since_dt:
                 continue
 
-            user = e.get("user") or e.get("created_by") or {}
-            name = user.get("name") or user.get("email") or "Unknown"
+            # Try every field name Loxo might use for the user who logged the activity
+            user = (
+                e.get("user")
+                or e.get("created_by")
+                or e.get("author")
+                or e.get("loxo_user")
+                or e.get("owner")
+                or {}
+            )
+            if isinstance(user, dict):
+                name = user.get("name") or user.get("email") or "Unknown"
+            else:
+                name = str(user) if user else "Unknown"
             activity_type = (e.get("activity_type") or {}).get("name", "Activity")
 
             activity[name]["total"] += 1

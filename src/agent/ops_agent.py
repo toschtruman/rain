@@ -6,6 +6,7 @@ status, syncs pipeline data, and generates daily digests.
 """
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -246,7 +247,7 @@ def run_agent(user_message: str, max_turns: int = 10, history: list = None) -> s
     for _ in range(max_turns):
         response = client.messages.create(
             model=MODEL,
-            max_tokens=4096,
+            max_tokens=1024,
             system=[
                 {
                     "type": "text",
@@ -270,27 +271,25 @@ def run_agent(user_message: str, max_turns: int = 10, history: list = None) -> s
             return ""
 
         if response.stop_reason == "tool_use":
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    try:
-                        result = execute_tool(block.name, block.input)
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": json.dumps(result, default=str),
-                            }
-                        )
-                    except Exception as e:
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "is_error": True,
-                                "content": f"Error: {e}",
-                            }
-                        )
+            tool_blocks = [b for b in response.content if b.type == "tool_use"]
+
+            def _run_tool(block):
+                try:
+                    result = execute_tool(block.name, block.input)
+                    return {"type": "tool_result", "tool_use_id": block.id,
+                            "content": json.dumps(result, default=str)}
+                except Exception as e:
+                    return {"type": "tool_result", "tool_use_id": block.id,
+                            "is_error": True, "content": f"Error: {e}"}
+
+            # Run all tool calls in parallel — big speedup when querying
+            # both Loxo instances or multiple endpoints simultaneously
+            tool_results = [None] * len(tool_blocks)
+            with ThreadPoolExecutor(max_workers=len(tool_blocks) or 1) as pool:
+                futures = {pool.submit(_run_tool, b): i for i, b in enumerate(tool_blocks)}
+                for future in as_completed(futures):
+                    tool_results[futures[future]] = future.result()
+
             messages.append({"role": "user", "content": tool_results})
 
     return "Agent reached max turns without completing."

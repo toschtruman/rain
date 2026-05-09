@@ -106,11 +106,46 @@ class LoxoClient:
         return {"candidates": filtered, "total": len(filtered), "total_all": len(all_candidates)}
 
     def get_placements(self, job_id: int = None) -> dict:
-        raw = self._get("placements")
+        # Try job-scoped endpoint first, fall back to global
+        raw = None
+        if job_id:
+            raw = self._get(f"jobs/{job_id}/placements")
+            if "_http_error" in raw:
+                raw = None
+
+        if raw is None:
+            raw = self._get("placements")
+
         if "_http_error" in raw:
             return raw
+
+        # Log raw structure so we can see what fields come back
+        if isinstance(raw, dict):
+            print(f"[placements] raw keys: {list(raw.keys())}", flush=True)
+            for k, v in raw.items():
+                if isinstance(v, list) and v:
+                    print(f"[placements] {k}[{len(v)}] sample keys: {list(v[0].keys())[:10]}", flush=True)
+                    print(f"[placements] first record: {v[0]}", flush=True)
+        elif isinstance(raw, list) and raw:
+            print(f"[placements] list[{len(raw)}] sample keys: {list(raw[0].keys())[:10]}", flush=True)
+            print(f"[placements] first record: {raw[0]}", flush=True)
+
         all_placements = raw if isinstance(raw, list) else raw.get("placements", raw.get("data", []))
-        if job_id:
-            all_placements = [p for p in all_placements
-                             if str(p.get("job_id", p.get("job", {}).get("id", ""))) == str(job_id)]
+        print(f"[placements] total before filter: {len(all_placements)}", flush=True)
+
+        if job_id and all_placements:
+            filtered = []
+            for p in all_placements:
+                # Try all the field shapes Loxo might use
+                p_job_id = (
+                    p.get("job_id")
+                    or p.get("job_order_id")
+                    or (p.get("job") or {}).get("id")
+                    or (p.get("job_order") or {}).get("id")
+                )
+                if str(p_job_id) == str(job_id):
+                    filtered.append(p)
+            print(f"[placements] after filter job_id={job_id}: {len(filtered)}", flush=True)
+            all_placements = filtered
+
         return {"placements": all_placements, "total": len(all_placements)}

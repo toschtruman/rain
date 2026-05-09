@@ -39,32 +39,23 @@ class LoxoClient:
         return resp.json()
 
     def _stage_map(self, job_id: int) -> dict:
-        """Return {stage_id: stage_name}, fetching once per instance and caching."""
+        """Return {stage_id: stage_name}, fetched once per instance and cached."""
         if self.instance in _stage_cache:
             return _stage_cache[self.instance]
 
-        # Try multiple known Loxo stage endpoint patterns
-        for path in (
-            f"jobs/{job_id}/stages",
-            "workflow_stages",
-            "pipeline_stages",
-            "stages",
-        ):
-            raw = self._get(path)
-            if "_http_error" in raw:
-                continue
-            # Handle both list and dict responses
-            stages = raw if isinstance(raw, list) else raw.get("stages", raw.get("workflow_stages", raw.get("data", [])))
-            if stages:
-                _stage_cache[self.instance] = {
-                    str(s.get("id", "")): s.get("name", s.get("title", str(s.get("id", ""))))
-                    for s in stages if isinstance(s, dict)
-                }
-                print(f"[stages] loaded {len(_stage_cache[self.instance])} stages for {self.instance} via /{path}", flush=True)
-                return _stage_cache[self.instance]
+        raw = self._get("workflow_stages")
+        if "_http_error" not in raw:
+            stages = raw if isinstance(raw, list) else raw.get("workflow_stages", raw.get("data", []))
+            _stage_cache[self.instance] = {
+                str(s.get("id", "")): s.get("name", str(s.get("id", "")))
+                for s in stages if isinstance(s, dict)
+            }
+            print(f"[stages] loaded {len(_stage_cache[self.instance])} stages for {self.instance}", flush=True)
+        else:
+            print(f"[stages] workflow_stages failed: {raw}", flush=True)
+            _stage_cache[self.instance] = {}
 
-        print(f"[stages] no stage endpoint worked for {self.instance}", flush=True)
-        return {}
+        return _stage_cache[self.instance]
 
     def get_candidates(self, page: int = 1, per_page: int = 25, **filters) -> dict:
         return self._get("people", {"page": page, "per_page": per_page, **filters})

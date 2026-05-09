@@ -15,7 +15,7 @@ from src.loxo.client import LoxoClient
 from src.monday.client import MondayClient
 
 
-MODEL = "claude-opus-4-7"
+MODEL = "claude-sonnet-4-6"
 
 SYSTEM_PROMPT = """You are Rain's internal ops assistant for a staffing and leadership recruitment firm.
 

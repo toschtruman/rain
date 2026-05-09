@@ -14,6 +14,8 @@ import time
 from urllib.parse import parse_qs
 
 import requests
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, Request
 from dotenv import load_dotenv
 from slack_sdk import WebClient
@@ -22,6 +24,17 @@ load_dotenv()
 
 app = FastAPI()
 slack = WebClient(token=os.environ.get("SLACK_BOT_TOKEN", ""))
+
+# Daily digest — 9:00 AM Central Time, Monday–Friday
+def _run_digest():
+    from src.agent.digest import post_digest_to_slack
+    channel = os.environ.get("SLACK_OPS_CHANNEL_ID", "")
+    if channel:
+        post_digest_to_slack(slack, channel)
+
+_scheduler = BackgroundScheduler(timezone="America/Chicago")
+_scheduler.add_job(_run_digest, CronTrigger(day_of_week="mon-fri", hour=9, minute=0))
+_scheduler.start()
 
 
 def verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
@@ -190,6 +203,17 @@ async def slack_ops_command(request: Request):
     thread.start()
 
     return {"response_type": "ephemeral", "text": f"On it... _{text}_"}
+
+
+@app.post("/internal/digest")
+async def trigger_digest(request: Request):
+    """Manually trigger the daily digest (for testing or on-demand use)."""
+    token = request.headers.get("X-Internal-Token", "")
+    if token != os.environ.get("INTERNAL_TOKEN", ""):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    thread = threading.Thread(target=_run_digest, daemon=True)
+    thread.start()
+    return {"status": "digest started"}
 
 
 @app.get("/health")

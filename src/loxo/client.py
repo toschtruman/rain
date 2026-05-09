@@ -297,6 +297,7 @@ class LoxoClient:
         Skips registration if a matching webhook already exists.
         """
         existing_raw = self._get("webhooks")
+        print(f"[webhook] existing raw: {str(existing_raw)[:300]}", flush=True)
         existing = (
             existing_raw if isinstance(existing_raw, list)
             else existing_raw.get("webhooks", existing_raw.get("data", []))
@@ -309,8 +310,13 @@ class LoxoClient:
             if hook_url in registered_urls:
                 results.append({"event": event, "status": "already_registered"})
                 continue
-            result = self._post("webhooks", {"url": hook_url, "event": event})
+            # Loxo expects Rails-style nested params
+            result = self._post("webhooks", {"webhook": {"url": hook_url, "event": event}})
+            if "_http_error" in result:
+                # Try alternate event name format (e.g. Placement vs placement_created)
+                alt_event = event.split("_")[0].capitalize()
+                result = self._post("webhooks", {"webhook": {"url": hook_url, "event": alt_event}})
             results.append({"event": event, "status": "registered", "response": result})
-            print(f"[webhook] registered {event} → {hook_url}", flush=True)
+            print(f"[webhook] registered {event} → {hook_url}: {result}", flush=True)
 
         return results

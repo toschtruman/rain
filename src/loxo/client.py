@@ -84,20 +84,30 @@ class LoxoClient:
                 None
             )
 
-        # Try different params to include placed/archived candidates
         all_candidates = []
-        for params in [{}, {"status": "all"}, {"include_archived": True}, {"active": False}]:
+        scroll_id = None
+        while True:
+            params = {"scroll_id": scroll_id} if scroll_id else {}
             raw = self._get(f"jobs/{job_id}/candidates", params)
             if "_http_error" in raw:
-                continue
+                break
+
             batch = raw if isinstance(raw, list) else raw.get("candidates", raw.get("data", []))
+            if not batch:
+                break
+
             for c in batch:
-                if isinstance(c, dict) and c.get("id") not in {x.get("id") for x in all_candidates}:
+                if isinstance(c, dict):
                     sid = str(c.get("workflow_stage_id", ""))
                     c["stage_name"] = stage_map.get(sid, sid) if stage_map else sid
                     all_candidates.append(c)
 
-        print(f"[candidates] job {job_id} total unique={len(all_candidates)}, stages={set(c.get('stage_name') for c in all_candidates)}", flush=True)
+            total_count = raw.get("total_count") if isinstance(raw, dict) else None
+            scroll_id = raw.get("scroll_id") if isinstance(raw, dict) else None
+            if not scroll_id or (total_count is not None and len(all_candidates) >= total_count):
+                break
+
+        print(f"[candidates] job {job_id} total={len(all_candidates)}, stages={set(c.get('stage_name') for c in all_candidates)}", flush=True)
 
         filtered = (
             [c for c in all_candidates if str(c.get("workflow_stage_id", "")) == target_stage_id]

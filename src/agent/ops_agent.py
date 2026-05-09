@@ -71,12 +71,13 @@ TOOLS = [
     },
     {
         "name": "get_loxo_job_candidates",
-        "description": "Get candidates on a specific Loxo job. Returns candidates with stage_name already resolved — no need to fetch stages separately. Group and filter by stage_name when answering stage-specific questions.",
+        "description": "Get candidates on a specific Loxo job. Pass stage_name to filter by pipeline stage (e.g. 'Placed', 'Initial Interview', 'Presented to Client'). Always filter by stage when the question is stage-specific.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "instance": {"type": "string", "enum": ["staffing", "leadership"]},
                 "job_id": {"type": "integer", "description": "Loxo job ID"},
+                "stage_name": {"type": "string", "description": "Filter by stage name e.g. 'Placed', 'Initial Interview'"},
             },
             "required": ["instance", "job_id"],
         },
@@ -185,7 +186,7 @@ def execute_tool(name: str, inputs: dict) -> Any:
 
     if name == "get_loxo_job_candidates":
         loxo = LoxoClient(instance=inputs["instance"])
-        return loxo.get_job_candidates(inputs["job_id"])
+        return loxo.get_job_candidates(inputs["job_id"], stage_name=inputs.get("stage_name"))
 
     if name == "get_monday_deals":
         monday = MondayClient()

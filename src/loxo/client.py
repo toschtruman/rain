@@ -73,22 +73,32 @@ class LoxoClient:
     def get_job(self, job_id: int) -> dict:
         return self._get(f"jobs/{job_id}")
 
-    def get_job_candidates(self, job_id: int) -> dict:
-        raw = self._get(f"jobs/{job_id}/candidates")
+    def get_job_candidates(self, job_id: int, stage_name: str = None) -> dict:
+        stage_map = self._stage_map(job_id)
+        params = {}
+
+        if stage_name and stage_map:
+            # Find stage ID by name (case-insensitive partial match)
+            stage_id = next(
+                (sid for sid, sname in stage_map.items()
+                 if stage_name.lower() in sname.lower()),
+                None
+            )
+            if stage_id:
+                params["workflow_stage_id"] = stage_id
+
+        raw = self._get(f"jobs/{job_id}/candidates", params)
         if "_http_error" in raw:
             return raw
 
-        stage_map = self._stage_map(job_id)
         candidates = raw if isinstance(raw, list) else raw.get("candidates", raw.get("data", []))
-
-        # Enrich each candidate with a human-readable stage name
         for c in candidates:
             if isinstance(c, dict):
-                sid = str(c.get("stage_id", c.get("workflow_stage_id", "")))
+                sid = str(c.get("workflow_stage_id", ""))
                 if sid and stage_map:
                     c["stage_name"] = stage_map.get(sid, sid)
 
-        return {"candidates": candidates, "total": len(candidates)}
+        return {"candidates": candidates, "total": len(candidates), "stage_filter": stage_name}
 
     def get_placements(self, job_id: int = None) -> dict:
         params = {}

@@ -76,7 +76,6 @@ class LoxoClient:
     def get_job_candidates(self, job_id: int, stage_name: str = None) -> dict:
         stage_map = self._stage_map(job_id)
 
-        # Find target stage ID if filtering by name
         target_stage_id = None
         if stage_name and stage_map:
             target_stage_id = next(
@@ -85,16 +84,20 @@ class LoxoClient:
                 None
             )
 
-        raw = self._get(f"jobs/{job_id}/candidates")
-        if "_http_error" in raw:
-            return raw
+        # Try different params to include placed/archived candidates
+        all_candidates = []
+        for params in [{}, {"status": "all"}, {"include_archived": True}, {"active": False}]:
+            raw = self._get(f"jobs/{job_id}/candidates", params)
+            if "_http_error" in raw:
+                continue
+            batch = raw if isinstance(raw, list) else raw.get("candidates", raw.get("data", []))
+            for c in batch:
+                if isinstance(c, dict) and c.get("id") not in {x.get("id") for x in all_candidates}:
+                    sid = str(c.get("workflow_stage_id", ""))
+                    c["stage_name"] = stage_map.get(sid, sid) if stage_map else sid
+                    all_candidates.append(c)
 
-        all_candidates = raw if isinstance(raw, list) else raw.get("candidates", raw.get("data", []))
-
-        for c in all_candidates:
-            if isinstance(c, dict):
-                sid = str(c.get("workflow_stage_id", ""))
-                c["stage_name"] = stage_map.get(sid, sid) if stage_map else sid
+        print(f"[candidates] job {job_id} total unique={len(all_candidates)}, stages={set(c.get('stage_name') for c in all_candidates)}", flush=True)
 
         filtered = (
             [c for c in all_candidates if str(c.get("workflow_stage_id", "")) == target_stage_id]

@@ -1,5 +1,7 @@
 import os
 import requests
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -160,3 +162,124 @@ class LoxoClient:
             all_placements = filtered
 
         return {"placements": all_placements, "total": len(all_placements)}
+
+    def get_leaderboard(self, since: str = None) -> dict:
+        """
+        Aggregate placements by recruiter/owner and compute revenue.
+        since: ISO date string e.g. '2026-01-01'. Defaults to current year.
+        Returns per-person placement count and estimated revenue.
+        """
+        since_dt = None
+        if since:
+            try:
+                since_dt = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        if since_dt is None:
+            since_dt = datetime(datetime.now().year, 1, 1, tzinfo=timezone.utc)
+
+        all_placements = self.get_placements().get("placements", [])
+
+        stats: dict = defaultdict(lambda: {"placements": 0, "revenue": 0.0, "roles": []})
+
+        for p in all_placements:
+            created_raw = p.get("created_at") or p.get("start_date") or ""
+            try:
+                created_dt = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                created_dt = None
+
+            if created_dt and created_dt < since_dt:
+                continue
+
+            # Revenue: salary * fee% or flat fee
+            salary = float(p.get("salary") or 0)
+            fee = float(p.get("fee") or 0)
+            fee_key = (p.get("fee_type") or {}).get("key", "percentage")
+            revenue = (salary * fee / 100) if fee_key == "percentage" else fee
+
+            job_title = (p.get("job") or {}).get("title", "Unknown role")
+
+            # Credit splits if present, otherwise credit created_by
+            splits = p.get("splits") or []
+            if splits:
+                for s in splits:
+                    user = s.get("user") or {}
+                    name = user.get("name") or user.get("email") or "Unknown"
+                    pct = float(s.get("percentage") or 100) / 100
+                    stats[name]["placements"] += 1
+                    stats[name]["revenue"] += round(revenue * pct, 2)
+                    if job_title not in stats[name]["roles"]:
+                        stats[name]["roles"].append(job_title)
+            else:
+                creator = p.get("created_by") or {}
+                name = creator.get("name") or creator.get("email") or "Unknown"
+                stats[name]["placements"] += 1
+                stats[name]["revenue"] += round(revenue, 2)
+                if job_title not in stats[name]["roles"]:
+                    stats[name]["roles"].append(job_title)
+
+        leaderboard = sorted(
+            [{"name": k, **v} for k, v in stats.items()],
+            key=lambda x: x["placements"],
+            reverse=True,
+        )
+        return {"since": since_dt.date().isoformat(), "leaderboard": leaderboard}
+
+    def get_team_activity(self, since: str = None) -> dict:
+        """
+        Aggregate person_events (calls, emails, notes, interviews) by user.
+        since: ISO date string. Defaults to last 30 days.
+        """
+        if since:
+            try:
+                since_dt = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+            except ValueError:
+                since_dt = None
+        else:
+            since_dt = None
+
+        # Fetch person_events with scroll pagination
+        all_events = []
+        scroll_id = None
+        while True:
+            params = {"scroll_id": scroll_id} if scroll_id else {}
+            raw = self._get("person_events", params)
+            if "_http_error" in raw:
+                break
+            batch = raw if isinstance(raw, list) else raw.get("person_events", raw.get("data", []))
+            if not batch:
+                break
+            all_events.extend(batch)
+            total_count = raw.get("total_count") if isinstance(raw, dict) else None
+            scroll_id = raw.get("scroll_id") if isinstance(raw, dict) else None
+            if not scroll_id or (total_count is not None and len(all_events) >= total_count):
+                break
+
+        activity: dict = defaultdict(lambda: {"total": 0, "by_type": defaultdict(int)})
+
+        for e in all_events:
+            created_raw = e.get("created_at") or ""
+            try:
+                created_dt = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                created_dt = None
+
+            if since_dt and created_dt and created_dt < since_dt:
+                continue
+
+            user = e.get("user") or e.get("created_by") or {}
+            name = user.get("name") or user.get("email") or "Unknown"
+            activity_type = (e.get("activity_type") or {}).get("name", "Activity")
+
+            activity[name]["total"] += 1
+            activity[name]["by_type"][activity_type] += 1
+
+        ranked = sorted(
+            [{"name": k, "total": v["total"], "by_type": dict(v["by_type"])}
+             for k, v in activity.items()],
+            key=lambda x: x["total"],
+            reverse=True,
+        )
+        since_label = since_dt.date().isoformat() if since_dt else "all time"
+        return {"since": since_label, "activity": ranked}

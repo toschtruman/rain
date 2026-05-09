@@ -25,15 +25,22 @@ load_dotenv()
 app = FastAPI()
 slack = WebClient(token=os.environ.get("SLACK_BOT_TOKEN", ""))
 
-# Daily digest — 9:00 AM Central Time, Monday–Friday
+# Scheduled posts — all times Central
 def _run_digest():
     from src.agent.digest import post_digest_to_slack
     channel = os.environ.get("SLACK_OPS_CHANNEL_ID", "")
     if channel:
         post_digest_to_slack(slack, channel)
 
+def _run_leaderboard():
+    from src.agent.digest import post_leaderboard_to_slack
+    channel = os.environ.get("SLACK_OPS_CHANNEL_ID", "")
+    if channel:
+        post_leaderboard_to_slack(slack, channel)
+
 _scheduler = BackgroundScheduler(timezone="America/Chicago")
 _scheduler.add_job(_run_digest, CronTrigger(day_of_week="mon-fri", hour=9, minute=0))
+_scheduler.add_job(_run_leaderboard, CronTrigger(day_of_week="fri", hour=16, minute=0))
 _scheduler.start()
 
 

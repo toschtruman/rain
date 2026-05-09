@@ -95,6 +95,30 @@ TOOLS = [
         },
     },
     {
+        "name": "get_loxo_leaderboard",
+        "description": "Get a placement leaderboard showing how many placements each recruiter/person has made and estimated revenue, for a given Loxo instance. Use when asked about top performers, who filled the most roles, revenue by person, or recruiter productivity.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "instance": {"type": "string", "enum": ["staffing", "leadership"]},
+                "since": {"type": "string", "description": "Start date ISO format e.g. '2026-01-01'. Defaults to current year."},
+            },
+            "required": ["instance"],
+        },
+    },
+    {
+        "name": "get_loxo_team_activity",
+        "description": "Get a breakdown of recruiter activity (calls, emails, notes, interviews logged) by team member in Loxo. Use when asked about who is most active, activity counts, or recruiter productivity.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "instance": {"type": "string", "enum": ["staffing", "leadership"]},
+                "since": {"type": "string", "description": "Start date ISO format e.g. '2026-01-01'. Omit for all-time."},
+            },
+            "required": ["instance"],
+        },
+    },
+    {
         "name": "probe_loxo_endpoints",
         "description": "Diagnostic tool: probe which Loxo API endpoints exist and return data. Use this when other Loxo tools return 404 errors to discover the correct endpoint paths.",
         "input_schema": {
@@ -183,6 +207,14 @@ def execute_tool(name: str, inputs: dict) -> Any:
     if name == "get_loxo_placements":
         loxo = LoxoClient(instance=inputs["instance"])
         return loxo.get_placements(job_id=inputs.get("job_id"))
+
+    if name == "get_loxo_leaderboard":
+        loxo = LoxoClient(instance=inputs["instance"])
+        return loxo.get_leaderboard(since=inputs.get("since"))
+
+    if name == "get_loxo_team_activity":
+        loxo = LoxoClient(instance=inputs["instance"])
+        return loxo.get_team_activity(since=inputs.get("since"))
 
     if name == "get_loxo_job_candidates":
         loxo = LoxoClient(instance=inputs["instance"])

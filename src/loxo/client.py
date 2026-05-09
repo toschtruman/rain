@@ -106,37 +106,38 @@ class LoxoClient:
         return {"candidates": filtered, "total": len(filtered), "total_all": len(all_candidates)}
 
     def get_placements(self, job_id: int = None) -> dict:
-        # Try job-scoped endpoint first, fall back to global
-        raw = None
-        if job_id:
-            raw = self._get(f"jobs/{job_id}/placements")
+        all_placements = []
+        scroll_id = None
+
+        while True:
+            params = {}
+            if scroll_id:
+                params["scroll_id"] = scroll_id
+
+            raw = self._get("placements", params)
             if "_http_error" in raw:
-                raw = None
+                return raw
 
-        if raw is None:
-            raw = self._get("placements")
+            batch = raw if isinstance(raw, list) else raw.get("placements", raw.get("data", []))
+            if not batch:
+                break
 
-        if "_http_error" in raw:
-            return raw
+            all_placements.extend(batch)
 
-        # Log raw structure so we can see what fields come back
-        if isinstance(raw, dict):
-            print(f"[placements] raw keys: {list(raw.keys())}", flush=True)
-            for k, v in raw.items():
-                if isinstance(v, list) and v:
-                    print(f"[placements] {k}[{len(v)}] sample keys: {list(v[0].keys())[:10]}", flush=True)
-                    print(f"[placements] first record: {v[0]}", flush=True)
-        elif isinstance(raw, list) and raw:
-            print(f"[placements] list[{len(raw)}] sample keys: {list(raw[0].keys())[:10]}", flush=True)
-            print(f"[placements] first record: {raw[0]}", flush=True)
+            total_count = raw.get("total_count") if isinstance(raw, dict) else None
+            scroll_id = raw.get("scroll_id") if isinstance(raw, dict) else None
 
-        all_placements = raw if isinstance(raw, list) else raw.get("placements", raw.get("data", []))
-        print(f"[placements] total before filter: {len(all_placements)}", flush=True)
+            print(f"[placements] fetched {len(all_placements)}/{total_count} (scroll_id={'yes' if scroll_id else 'none'})", flush=True)
+
+            # Stop if no more pages or we've got everything
+            if not scroll_id or (total_count is not None and len(all_placements) >= total_count):
+                break
+
+        print(f"[placements] total fetched: {len(all_placements)}", flush=True)
 
         if job_id and all_placements:
             filtered = []
             for p in all_placements:
-                # Try all the field shapes Loxo might use
                 p_job_id = (
                     p.get("job_id")
                     or p.get("job_order_id")

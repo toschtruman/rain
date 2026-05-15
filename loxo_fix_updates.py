@@ -394,6 +394,8 @@ def main():
                         help="Print non-empty custom_* fields for sample people and exit")
     parser.add_argument("--debug", metavar="EMAIL",
                         help="Inspect export lookup and current field values for one email")
+    parser.add_argument("--task", choices=["1", "2", "all"], default="all",
+                        help="Which task to run: 1=Willo, 2=CustomerSupport, all=both (default: all)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would happen without making any API calls")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -420,9 +422,11 @@ def main():
     if args.dry_run:
         print("\n🔎 DRY RUN MODE — no API calls will be made\n")
 
-    run_willo_updates(client, export, dry_run=args.dry_run, limit=args.limit)
-    run_cs_updates(client, export, dry_run=args.dry_run, limit=args.limit,
-                   cs_role_id=CS_ROLE_ID)
+    if args.task in ("1", "all"):
+        run_willo_updates(client, export, dry_run=args.dry_run, limit=args.limit)
+    if args.task in ("2", "all"):
+        run_cs_updates(client, export, dry_run=args.dry_run, limit=args.limit,
+                       cs_role_id=CS_ROLE_ID)
 
     if not args.dry_run:
         write_failures()

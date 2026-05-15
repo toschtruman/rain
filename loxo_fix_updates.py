@@ -15,6 +15,7 @@ the Email, Personal Email, and Work Email columns.
 Usage:
   python loxo_fix_updates.py --export people.csv --discover
   python loxo_fix_updates.py --export people.csv --debug EMAIL
+  python loxo_fix_updates.py --export people.csv --find-hierarchy-id
   python loxo_fix_updates.py --export people.csv --dry-run --limit 3
   python loxo_fix_updates.py --export people.csv --limit 3
   python loxo_fix_updates.py --export people.csv
@@ -148,6 +149,71 @@ class LoxoStaffingClient:
 # ---------------------------------------------------------------------------
 # Hierarchy helpers
 # ---------------------------------------------------------------------------
+
+def find_hierarchy_id_from_export(client: LoxoStaffingClient,
+                                   export_path: Path) -> Optional[int]:
+    """
+    Scan the export CSV for anyone whose 'Roles Experienced in - Registration'
+    column contains NEW_ROLE. Fetch the first match from the API and print
+    their full custom_hierarchy_13 array so the correct id can be read off.
+    Returns the id if found, else None.
+    """
+    print("\n🔍 --find-hierarchy-id: scanning export for someone with '{}' ...\n".format(NEW_ROLE))
+
+    ROLES_EXPORT_COL = "Roles Experienced in - Registration"
+    candidate_id = None
+
+    with open(export_path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        # Warn clearly if the column isn't present at all
+        if ROLES_EXPORT_COL not in (reader.fieldnames or []):
+            print("  ⚠️  Column {!r} not found in export. Available columns:".format(ROLES_EXPORT_COL))
+            print("  ", reader.fieldnames)
+            print("\n  Tip: pass the exact column name that holds role data.")
+            return None
+
+        for row in reader:
+            cell = (row.get(ROLES_EXPORT_COL) or "").strip()
+            if NEW_ROLE.lower() in cell.lower():
+                candidate_id = (row.get("Id") or "").strip()
+                candidate_email = (row.get("Email") or "").strip()
+                print("  Found in export: id={}, email={!r}".format(candidate_id, candidate_email))
+                print("  Export cell value: {!r}\n".format(cell))
+                break
+
+    if not candidate_id:
+        print("  ❌ No one in the export has '{}' in column {!r}.".format(
+            NEW_ROLE, ROLES_EXPORT_COL))
+        print("  Cannot determine hierarchy id this way.")
+        return None
+
+    print("  Fetching full API record for id={} ...".format(candidate_id))
+    full = client.get_person(candidate_id)
+    if "_error" in full:
+        print("  ❌ Could not fetch person {}: {}".format(candidate_id, full))
+        return None
+
+    roles_array = full.get(ROLES_KEY)
+    print("  {} on API record:".format(ROLES_KEY))
+    if not roles_array:
+        print("  ❌ Field is empty or missing on this person's API record.")
+        return None
+
+    found_id = None
+    for entry in roles_array:
+        marker = " ← this one" if (entry.get("value") or "").strip().lower() == NEW_ROLE.lower() else ""
+        print("    {{'id': {}, 'value': {!r}}}{}".format(
+            entry.get("id"), entry.get("value"), marker))
+        if (entry.get("value") or "").strip().lower() == NEW_ROLE.lower():
+            found_id = entry.get("id")
+
+    if found_id is not None:
+        print("\n  ✅ Hierarchy id for '{}' = {}\n".format(NEW_ROLE, found_id))
+    else:
+        print("\n  ⚠️  '{}' not found in the API array despite being in the export cell.".format(NEW_ROLE))
+
+    return found_id
+
 
 def find_cs_role_id(client: LoxoStaffingClient) -> Optional[int]:
     """Return the hierarchy item id for NEW_ROLE, or None if not found."""
@@ -430,6 +496,8 @@ def main():
                         help="Print non-empty custom_* fields for sample people and exit")
     parser.add_argument("--debug", metavar="EMAIL",
                         help="Inspect export lookup and current field values for one email")
+    parser.add_argument("--find-hierarchy-id", action="store_true",
+                        help="Scan export for someone with the CS role and print their hierarchy array")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would happen without making any API calls")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -451,6 +519,10 @@ def main():
 
     if args.debug:
         run_debug(client, export, args.debug)
+        return
+
+    if args.find_hierarchy_id:
+        find_hierarchy_id_from_export(client, Path(args.export))
         return
 
     if args.dry_run:

@@ -3,15 +3,17 @@
 loxo_fix_updates.py
 
 Updates Loxo people records (staffing instance: rain-global) from two CSVs:
-  1. willo-fixes.csv            → patches the "Willo" custom field URL
+  1. willo-fixes.csv            → patches custom_text_1 (Willo URL)
   2. customer-support-fixes.csv → appends "Customer Support/Customer Care"
-                                   to "Roles Experienced in - Registration"
+                                   to custom_hierarchy_13 (Roles Experienced
+                                   in - Registration)
 
 Usage:
-  python loxo_fix_updates.py --discover       # print all custom fields for one person and exit
-  python loxo_fix_updates.py --dry-run        # print what would happen, no API calls
-  python loxo_fix_updates.py --limit 5        # process only first 5 rows of each CSV
-  python loxo_fix_updates.py                  # run everything
+  python loxo_fix_updates.py --discover          # print custom_* fields for sample people
+  python loxo_fix_updates.py --dry-run           # print what would happen, no API calls
+  python loxo_fix_updates.py --dry-run --limit 3 # dry-run first 3 rows
+  python loxo_fix_updates.py --limit 3           # live test on 3 rows
+  python loxo_fix_updates.py                     # run everything
 
 Requires: LOXO_RAIN_STAFFING_API_KEY in environment or .env file.
 """
@@ -22,10 +24,10 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional, List, Dict
 
 import requests
 from dotenv import load_dotenv
-from typing import Optional, Union
 
 load_dotenv()
 
@@ -38,14 +40,14 @@ API_KEY_ENV = "LOXO_RAIN_STAFFING_API_KEY"
 
 HERE = Path(__file__).parent
 WILLO_CSV = HERE / "willo-fixes.csv"
-CS_CSV = HERE / "customer-support-fixes.csv"
+CS_CSV    = HERE / "customer-support-fixes.csv"
 FAILURES_CSV = HERE / "failures.csv"
 
 RATE_LIMIT_SLEEP = 0.5  # seconds between API calls
 
-WILLO_FIELD_LABEL = "Willo"
-ROLES_FIELD_LABEL = "Roles Experienced in - Registration"
-NEW_ROLE = "Customer Support/Customer Care"
+WILLO_KEY  = "custom_text_1"          # Willo interview URL
+ROLES_KEY  = "custom_hierarchy_13"    # Roles Experienced in - Registration
+NEW_ROLE   = "Customer Support/Customer Care"
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +66,7 @@ class LoxoStaffingClient:
     def _url(self, path: str) -> str:
         return self.base_url + path.lstrip("/")
 
-    def get(self, path: str, params: dict = None) -> dict:
+    def get(self, path: str, params: Optional[dict] = None) -> dict:
         resp = self.session.get(self._url(path), params=params or {})
         if not resp.ok:
             return {"_error": resp.status_code, "detail": resp.text[:400]}
@@ -83,18 +85,17 @@ class LoxoStaffingClient:
             return {"_error": "bad_json", "detail": resp.text[:400]}
 
     def find_person_by_email(self, email: str) -> Optional[dict]:
-        """Search for a person by email; return the first exact match or None."""
+        """Search /people?query=email; return exact match or first result."""
         time.sleep(RATE_LIMIT_SLEEP)
         raw = self.get("people", {"query": email.strip()})
         if "_error" in raw:
-            return {"_error": raw["_error"], "detail": raw.get("detail", "")}
+            return raw
         people = (
             raw if isinstance(raw, list)
             else raw.get("people", raw.get("candidates", raw.get("data", [])))
         )
         if not people:
             return None
-        # Prefer exact email match
         for p in people:
             if isinstance(p, dict):
                 if (p.get("email") or "").strip().lower() == email.strip().lower():
@@ -102,129 +103,77 @@ class LoxoStaffingClient:
         return people[0] if isinstance(people[0], dict) else None
 
     def get_person(self, person_id) -> dict:
-        """Fetch full person record (includes custom_fields)."""
+        """Fetch full person record."""
         time.sleep(RATE_LIMIT_SLEEP)
-        return self.get(f"people/{person_id}")
+        return self.get("people/{}".format(person_id))
+
+    def get_hierarchy_options(self, hierarchy_id: int) -> dict:
+        """Fetch all options for a hierarchy field."""
+        time.sleep(RATE_LIMIT_SLEEP)
+        # Try the most common Loxo endpoint patterns
+        for path in (
+            "hierarchies/{}".format(hierarchy_id),
+            "hierarchy_items?hierarchy_id={}".format(hierarchy_id),
+            "custom_hierarchies/{}".format(hierarchy_id),
+        ):
+            result = self.get(path)
+            if "_error" not in result:
+                return result
+        return {"_error": "not_found", "detail": "No hierarchy endpoint responded for id={}".format(hierarchy_id)}
 
 
 # ---------------------------------------------------------------------------
-# Custom field helpers
+# Hierarchy helpers
 # ---------------------------------------------------------------------------
 
-def _cf_label(cf: dict) -> str:
-    """Extract the label from a custom field dict, trying common key names."""
-    return (
-        cf.get("label")
-        or cf.get("name")
-        or cf.get("field_name")
-        or cf.get("title")
-        or ""
-    ).strip()
+def find_cs_role_id(client: LoxoStaffingClient) -> Optional[int]:
+    """
+    Fetch hierarchy options for ROLES_KEY and return the integer id
+    that corresponds to NEW_ROLE ("Customer Support/Customer Care").
+    """
+    # Extract the numeric id from e.g. "custom_hierarchy_13" -> 13
+    hierarchy_id = int(ROLES_KEY.split("_")[-1])
+    raw = client.get_hierarchy_options(hierarchy_id)
 
-
-def find_custom_field(person: dict, label: str) -> Optional[dict]:
-    """Find a custom field by label (case-insensitive)."""
-    for cf in person.get("custom_fields") or []:
-        if isinstance(cf, dict) and _cf_label(cf).lower() == label.lower():
-            return cf
-    return None
-
-
-def field_id(cf: dict):
-    """Extract the field identifier, trying common key names."""
-    return cf.get("id") or cf.get("field_id") or cf.get("custom_field_id")
-
-
-def parse_roles(value) -> list:
-    """Parse roles that may be a list, comma-separated string, or None."""
-    if not value:
-        return []
-    if isinstance(value, list):
-        return [str(r).strip() for r in value if str(r).strip()]
-    return [r.strip() for r in str(value).split(",") if r.strip()]
-
-
-def roles_to_original_type(roles: list, original_value) -> Union[list, str]:
-    """Return roles in the same type as the original value (list or comma string)."""
-    if isinstance(original_value, list):
-        return roles
-    return ", ".join(roles)
-
-
-# ---------------------------------------------------------------------------
-# --discover mode
-# ---------------------------------------------------------------------------
-
-def run_discover(client: LoxoStaffingClient):
-    """Fetch a real person and print every custom field label, id, type, and value."""
-
-    def print_fields(person: dict):
-        name = "{} {}".format(person.get("first_name", ""), person.get("last_name", "")).strip()
-        pid = person.get("id", "?")
-        print("\n" + "=" * 70)
-        print("Person: {}  (id={})".format(name, pid))
-        print("=" * 70)
-        custom_keys = {k: v for k, v in person.items()
-                       if k.startswith("custom_") and v not in (None, "", [], {})}
-        if not custom_keys:
-            print("  ⚠️  No non-empty custom_* keys found.")
-            print("  All keys:", list(person.keys()))
-            return
-        for key, value in sorted(custom_keys.items()):
-            print("  {}: {!r}".format(key, value))
-
-    print("\n🔍 DISCOVER MODE\n", flush=True)
-
-    # Pull the first person from the list endpoint
-    raw = client.get("people", {"per_page": 1})
     if "_error" in raw:
-        print("❌ GET /people failed:", raw)
-        sys.exit(1)
-    people = raw if isinstance(raw, list) else raw.get("people", raw.get("candidates", raw.get("data", [])))
-    if not people:
-        print("❌ No people returned from /people.")
-        sys.exit(1)
+        print("  ⚠️  Could not fetch hierarchy options: {}".format(raw))
+        return None
 
-    stub = people[0]
-    pid = stub.get("id")
-    print("  Fetching full record for person id={} ...".format(pid), flush=True)
-    full = client.get_person(pid)
-    if "_error" in full:
-        print("❌ Could not fetch person {}: {}".format(pid, full))
-        sys.exit(1)
-    print_fields(full)
+    # The response may be a list directly, or nested under a key
+    items = raw if isinstance(raw, list) else (
+        raw.get("hierarchy_items")
+        or raw.get("items")
+        or raw.get("options")
+        or raw.get("data")
+        or []
+    )
 
-    # Also look up the first email from the Willo CSV for a more representative sample
-    if WILLO_CSV.exists():
-        with open(WILLO_CSV, newline="", encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
-        if rows:
-            sample_email = (rows[0].get("Email") or "").strip()
-            if sample_email:
-                print("\n  Also fetching first Willo CSV person: {} ...".format(sample_email), flush=True)
-                p2 = client.find_person_by_email(sample_email)
-                if p2 and "_error" not in p2:
-                    full2 = client.get_person(p2["id"])
-                    if "_error" not in full2:
-                        print_fields(full2)
-                    else:
-                        print("  ⚠️  Could not fetch full record:", full2)
-                else:
-                    print("  ⚠️  Person not found for:", sample_email)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = (
+            item.get("value")
+            or item.get("name")
+            or item.get("label")
+            or ""
+        ).strip()
+        if label.lower() == NEW_ROLE.lower():
+            return item.get("id")
 
-    print("\n✅ Discovery complete. Confirm field labels above match '{}' and '{}'.\n".format(
-        WILLO_FIELD_LABEL, ROLES_FIELD_LABEL))
+    print("  ⚠️  '{}' not found in hierarchy options. Raw sample: {}".format(
+        NEW_ROLE, str(items[:3])))
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Failure log
 # ---------------------------------------------------------------------------
 
-_failures = []  # type: list
+_failures = []  # type: List[Dict]
 
 
 def log_fail(task: str, name: str, email: str, reason: str):
-    print(f"  ❌ Failed {name} ({email}): {reason}", flush=True)
+    print("  ❌ Failed {} ({}): {}".format(name, email, reason), flush=True)
     _failures.append({"task": task, "name": name, "email": email, "reason": reason})
 
 
@@ -236,168 +185,213 @@ def write_failures():
         writer = csv.DictWriter(f, fieldnames=["task", "name", "email", "reason"])
         writer.writeheader()
         writer.writerows(_failures)
-    print(f"\n⚠️  {len(_failures)} failure(s) written to {FAILURES_CSV}")
+    print("\n⚠️  {} failure(s) written to {}".format(len(_failures), FAILURES_CSV))
 
 
 # ---------------------------------------------------------------------------
-# Task 1: Willo URL updates
+# --discover mode
+# ---------------------------------------------------------------------------
+
+def run_discover(client: LoxoStaffingClient):
+    """Print all non-empty custom_* keys for a sample person."""
+
+    def print_custom(person: dict):
+        name = "{} {}".format(
+            person.get("first_name", ""), person.get("last_name", "")
+        ).strip()
+        print("\n" + "=" * 70)
+        print("Person: {}  (id={})".format(name, person.get("id", "?")))
+        print("=" * 70)
+        custom = {k: v for k, v in person.items()
+                  if k.startswith("custom_") and v not in (None, "", [], {})}
+        if not custom:
+            print("  ⚠️  No non-empty custom_* keys found.")
+            print("  All keys:", list(person.keys()))
+        for key in sorted(custom):
+            print("  {}: {!r}".format(key, custom[key]))
+
+    print("\n🔍 DISCOVER MODE\n", flush=True)
+
+    raw = client.get("people", {"per_page": 1})
+    if "_error" in raw:
+        print("❌ GET /people failed:", raw)
+        sys.exit(1)
+    people = raw if isinstance(raw, list) else raw.get("people", raw.get("candidates", raw.get("data", [])))
+    if not people:
+        print("❌ No people returned.")
+        sys.exit(1)
+
+    full = client.get_person(people[0]["id"])
+    if "_error" in full:
+        print("❌ Could not fetch person:", full)
+        sys.exit(1)
+    print_custom(full)
+
+    if WILLO_CSV.exists():
+        with open(WILLO_CSV, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        if rows:
+            sample_email = (rows[0].get("Email") or "").strip()
+            if sample_email:
+                print("\n  Fetching Willo CSV sample person: {} ...".format(sample_email))
+                p2 = client.find_person_by_email(sample_email)
+                if p2 and "_error" not in p2:
+                    full2 = client.get_person(p2["id"])
+                    if "_error" not in full2:
+                        print_custom(full2)
+                    else:
+                        print("  ⚠️  Could not fetch full record:", full2)
+                else:
+                    print("  ⚠️  Not found:", sample_email)
+
+    print("\n✅ Discovery complete.\n")
+
+
+# ---------------------------------------------------------------------------
+# Task 1: Willo URL updates  (custom_text_1)
 # ---------------------------------------------------------------------------
 
 def run_willo_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[int]):
     if not WILLO_CSV.exists():
-        print(f"❌ CSV not found: {WILLO_CSV}")
+        print("❌ CSV not found: {}".format(WILLO_CSV))
         return
 
     with open(WILLO_CSV, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
-
     if limit:
         rows = rows[:limit]
 
-    print(f"\n{'='*70}")
-    print(f"TASK 1: Willo URL updates  ({len(rows)} rows)")
-    print(f"{'='*70}\n")
+    print("\n" + "=" * 70)
+    print("TASK 1: Willo URL updates  ({} rows)".format(len(rows)))
+    print("=" * 70 + "\n")
 
     for row in rows:
-        first = (row.get("First Name") or "").strip()
-        last = (row.get("Last Name") or "").strip()
-        email = (row.get("Email") or "").strip()
+        first     = (row.get("First Name") or "").strip()
+        last      = (row.get("Last Name") or "").strip()
+        email     = (row.get("Email") or "").strip()
         willo_url = (row.get("Correct Willo URL") or "").strip()
-        name = f"{first} {last}".strip()
+        name      = "{} {}".format(first, last).strip()
 
         if not email or not willo_url:
-            print(f"  ⚠️  Skipping row with missing email or URL: {dict(row)}")
+            print("  ⚠️  Skipping — missing email or URL: {}".format(dict(row)))
             continue
 
         if dry_run:
-            print(f"  🔎 [DRY RUN] {name} ({email})\n"
-                  f"           → set '{WILLO_FIELD_LABEL}' = {willo_url}")
+            print("  🔎 [DRY RUN] {} ({})".format(name, email))
+            print("           → {} = {!r}".format(WILLO_KEY, willo_url))
             continue
 
-        # 1. Find person
         person = client.find_person_by_email(email)
         if person is None:
             log_fail("willo", name, email, "Person not found by email")
             continue
         if "_error" in person:
-            log_fail("willo", name, email, f"Search error {person['_error']}: {person.get('detail','')}")
+            log_fail("willo", name, email, "Search error {}: {}".format(
+                person["_error"], person.get("detail", "")))
             continue
 
         pid = person.get("id")
-
-        # 2. Fetch full record
-        full = client.get_person(pid)
-        if "_error" in full:
-            log_fail("willo", name, email, f"Could not fetch person {pid}: {full.get('detail','')}")
-            continue
-
-        # 3. Locate Willo custom field
-        willo_cf = find_custom_field(full, WILLO_FIELD_LABEL)
-        if not willo_cf:
-            available = [_cf_label(cf) for cf in (full.get("custom_fields") or [])]
-            log_fail("willo", name, email,
-                     f"Field '{WILLO_FIELD_LABEL}' not found. Available: {available}")
-            continue
-
-        fid = field_id(willo_cf)
-
-        # 4. PATCH
         time.sleep(RATE_LIMIT_SLEEP)
-        result = client.patch(f"people/{pid}", {
-            "person": {
-                "custom_fields": [{"id": fid, "value": willo_url}]
-            }
+        result = client.patch("people/{}".format(pid), {
+            "person": {WILLO_KEY: willo_url}
         })
         if "_error" in result:
-            log_fail("willo", name, email, f"PATCH {result['_error']}: {result.get('detail','')}")
+            log_fail("willo", name, email, "PATCH {}: {}".format(
+                result["_error"], result.get("detail", "")))
         else:
-            print(f"  ✅ Updated {name} — Willo URL set to {willo_url}")
+            print("  ✅ Updated {} — {} = {!r}".format(name, WILLO_KEY, willo_url))
 
 
 # ---------------------------------------------------------------------------
-# Task 2: Customer Support role additions
+# Task 2: Customer Support role additions  (custom_hierarchy_13)
 # ---------------------------------------------------------------------------
 
-def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[int]):
+def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[int],
+                   cs_role_id: Optional[int]):
     if not CS_CSV.exists():
-        print(f"❌ CSV not found: {CS_CSV}")
+        print("❌ CSV not found: {}".format(CS_CSV))
         return
 
     with open(CS_CSV, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
-
     if limit:
         rows = rows[:limit]
 
-    print(f"\n{'='*70}")
-    print(f"TASK 2: Customer Support role additions  ({len(rows)} rows)")
-    print(f"{'='*70}\n")
+    print("\n" + "=" * 70)
+    print("TASK 2: Customer Support role additions  ({} rows)".format(len(rows)))
+    print("=" * 70 + "\n")
+
+    if not dry_run and cs_role_id is None:
+        print("  ❌ Cannot run Task 2: hierarchy id for '{}' not found. "
+              "All rows will be skipped.".format(NEW_ROLE))
+        for row in rows:
+            email = (row.get("Email") or "").strip()
+            name  = "{} {}".format(
+                (row.get("First Name") or "").strip(),
+                (row.get("Last Name") or "").strip()
+            ).strip()
+            log_fail("customer_support", name, email,
+                     "Hierarchy id for '{}' could not be resolved".format(NEW_ROLE))
+        return
 
     for row in rows:
         first = (row.get("First Name") or "").strip()
-        last = (row.get("Last Name") or "").strip()
+        last  = (row.get("Last Name") or "").strip()
         email = (row.get("Email") or "").strip()
-        name = f"{first} {last}".strip()
+        name  = "{} {}".format(first, last).strip()
 
         if not email:
-            print(f"  ⚠️  Skipping row with missing email: {dict(row)}")
+            print("  ⚠️  Skipping — missing email: {}".format(dict(row)))
             continue
 
         if dry_run:
-            print(f"  🔎 [DRY RUN] {name} ({email})\n"
-                  f"           → append '{NEW_ROLE}' to '{ROLES_FIELD_LABEL}'")
+            print("  🔎 [DRY RUN] {} ({})".format(name, email))
+            print("           → append {{'id': {}, 'value': {!r}}} to {}".format(
+                cs_role_id or "<??>", NEW_ROLE, ROLES_KEY))
             continue
 
-        # 1. Find person
+        # Find person
         person = client.find_person_by_email(email)
         if person is None:
             log_fail("customer_support", name, email, "Person not found by email")
             continue
         if "_error" in person:
-            log_fail("customer_support", name, email,
-                     f"Search error {person['_error']}: {person.get('detail','')}")
+            log_fail("customer_support", name, email, "Search error {}: {}".format(
+                person["_error"], person.get("detail", "")))
             continue
 
         pid = person.get("id")
 
-        # 2. Fetch full record
+        # Fetch full record to get current roles array
         full = client.get_person(pid)
         if "_error" in full:
-            log_fail("customer_support", name, email,
-                     f"Could not fetch person {pid}: {full.get('detail','')}")
+            log_fail("customer_support", name, email, "Could not fetch person {}: {}".format(
+                pid, full.get("detail", "")))
             continue
 
-        # 3. Locate roles custom field
-        roles_cf = find_custom_field(full, ROLES_FIELD_LABEL)
-        if not roles_cf:
-            available = [_cf_label(cf) for cf in (full.get("custom_fields") or [])]
-            log_fail("customer_support", name, email,
-                     f"Field '{ROLES_FIELD_LABEL}' not found. Available: {available}")
+        current_roles = full.get(ROLES_KEY) or []
+        if not isinstance(current_roles, list):
+            current_roles = []
+
+        # Skip if already present
+        if any(r.get("id") == cs_role_id for r in current_roles if isinstance(r, dict)):
+            print("  ⏭️  Skipped {} — '{}' already present".format(name, NEW_ROLE))
             continue
 
-        fid = field_id(roles_cf)
-        original_value = roles_cf.get("value")
-        current_roles = parse_roles(original_value)
+        new_entry = {"id": cs_role_id, "value": NEW_ROLE}
+        updated_roles = current_roles + [new_entry]
 
-        if NEW_ROLE in current_roles:
-            print(f"  ⏭️  Skipped {name} — '{NEW_ROLE}' already present")
-            continue
-
-        updated_roles = roles_to_original_type(current_roles + [NEW_ROLE], original_value)
-
-        # 4. PATCH
         time.sleep(RATE_LIMIT_SLEEP)
-        result = client.patch(f"people/{pid}", {
-            "person": {
-                "custom_fields": [{"id": fid, "value": updated_roles}]
-            }
+        result = client.patch("people/{}".format(pid), {
+            "person": {ROLES_KEY: updated_roles}
         })
         if "_error" in result:
-            log_fail("customer_support", name, email,
-                     f"PATCH {result['_error']}: {result.get('detail','')}")
+            log_fail("customer_support", name, email, "PATCH {}: {}".format(
+                result["_error"], result.get("detail", "")))
         else:
-            old_str = ", ".join(current_roles) if current_roles else "(none)"
-            print(f"  ✅ Updated {name} — added '{NEW_ROLE}' (was: {old_str})")
+            old_labels = [r.get("value", "") for r in current_roles if isinstance(r, dict)]
+            print("  ✅ Updated {} — appended '{}' (had {} role(s))".format(
+                name, NEW_ROLE, len(old_labels)))
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +401,7 @@ def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[in
 def main():
     parser = argparse.ArgumentParser(description="Update Loxo people records from CSVs.")
     parser.add_argument("--discover", action="store_true",
-                        help="Print all custom fields for one person and exit")
+                        help="Print non-empty custom_* fields for sample people and exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would happen without making any API calls")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -416,8 +410,8 @@ def main():
 
     api_key = os.environ.get(API_KEY_ENV)
     if not api_key:
-        print(f"❌ Missing environment variable: {API_KEY_ENV}")
-        print(f"   Add it to a .env file in the project root or export it in your shell.")
+        print("❌ Missing environment variable: {}".format(API_KEY_ENV))
+        print("   Add it to a .env file in the project root or export it in your shell.")
         sys.exit(1)
 
     client = LoxoStaffingClient(api_key)
@@ -429,8 +423,18 @@ def main():
     if args.dry_run:
         print("\n🔎 DRY RUN MODE — no API calls will be made\n")
 
+    # Resolve "Customer Support/Customer Care" hierarchy id once up front
+    cs_role_id = None
+    if not args.dry_run:
+        print("🔍 Looking up hierarchy id for '{}' ...".format(NEW_ROLE), flush=True)
+        cs_role_id = find_cs_role_id(client)
+        if cs_role_id is None:
+            print("  ⚠️  Could not resolve hierarchy id — Task 2 rows will be logged as failures.")
+        else:
+            print("  ✅ Found id={} for '{}'\n".format(cs_role_id, NEW_ROLE))
+
     run_willo_updates(client, dry_run=args.dry_run, limit=args.limit)
-    run_cs_updates(client, dry_run=args.dry_run, limit=args.limit)
+    run_cs_updates(client, dry_run=args.dry_run, limit=args.limit, cs_role_id=cs_role_id)
 
     if not args.dry_run:
         write_failures()

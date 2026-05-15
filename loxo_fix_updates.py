@@ -164,19 +164,14 @@ def run_discover(client: LoxoStaffingClient):
         print("\n" + "=" * 70)
         print("Person: {}  (id={})".format(name, pid))
         print("=" * 70)
-        cfs = person.get("custom_fields") or []
-        if not cfs:
-            print("  ⚠️  No custom_fields key found on this record.")
-            print("  Top-level keys:", list(person.keys()))
+        custom_keys = {k: v for k, v in person.items()
+                       if k.startswith("custom_") and v not in (None, "", [], {})}
+        if not custom_keys:
+            print("  ⚠️  No non-empty custom_* keys found.")
+            print("  All keys:", list(person.keys()))
             return
-        print("  {} custom field(s):\n".format(len(cfs)))
-        for i, cf in enumerate(cfs, 1):
-            label = _cf_label(cf) or "(no label)"
-            fid   = cf.get("id") or cf.get("field_id") or cf.get("custom_field_id") or "(no id)"
-            ftype = cf.get("field_type") or cf.get("type") or "(unknown)"
-            value = str(cf.get("value", ""))[:80]
-            print("  [{:03d}] {:<45s} id={:<10s} type={:<20s} value={!r}".format(
-                i, label, str(fid), ftype, value))
+        for key, value in sorted(custom_keys.items()):
+            print("  {}: {!r}".format(key, value))
 
     print("\n🔍 DISCOVER MODE\n", flush=True)
 

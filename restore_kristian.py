@@ -71,6 +71,11 @@ class Client:
         except Exception:
             return {"_error": "bad_json", "detail": resp.text[:400]}
 
+    def patch_raw(self, path: str, body: dict) -> tuple:
+        """Return (status_code, response_text) without any processing."""
+        resp = self.session.patch(self._url(path), json=body)
+        return resp.status_code, resp.text
+
 
 # ---------------------------------------------------------------------------
 # Find role IDs from a donor person in the export
@@ -153,6 +158,8 @@ def main():
                         help="Print the restore payload without making any API calls")
     parser.add_argument("--verify", action="store_true",
                         help="Fetch and print Kristian's current custom_hierarchy_13 from the API")
+    parser.add_argument("--debug-patch", action="store_true",
+                        help="Fetch current roles, PATCH with existing+CS role, print raw response, re-fetch to confirm")
     args = parser.parse_args()
 
     api_key = os.environ.get(API_KEY_ENV)
@@ -177,6 +184,62 @@ def main():
             for entry in roles:
                 print("    {{'id': {}, 'value': {!r}}}".format(
                     entry.get("id"), entry.get("value")))
+        print()
+        return
+
+    if args.debug_patch:
+        import json
+
+        def print_roles(label, full):
+            roles = full.get(ROLES_KEY)
+            if not roles:
+                print("  {} → empty / missing".format(label))
+            else:
+                print("  {} → {} entry(s):".format(label, len(roles)))
+                for e in roles:
+                    print("    {{'id': {}, 'value': {!r}}}".format(e.get("id"), e.get("value")))
+
+        print("\n🔍 DEBUG PATCH for Kristian (id={})\n".format(KRISTIAN_ID), flush=True)
+
+        # Step 1: fetch current record
+        print("── Step 1: current record ──────────────────────────────────────")
+        full = client.get("people/{}".format(KRISTIAN_ID))
+        if "_error" in full:
+            print("❌ Fetch failed: {}".format(full))
+            sys.exit(1)
+        print_roles(ROLES_KEY, full)
+
+        current_roles = full.get(ROLES_KEY) or []
+        if not isinstance(current_roles, list):
+            current_roles = []
+
+        # Step 2: build and show the PATCH body
+        new_entry = {"id": 43389, "value": "Customer Support/Customer Care"}
+        already_present = any(r.get("id") == 43389 for r in current_roles if isinstance(r, dict))
+        updated_roles = current_roles if already_present else current_roles + [new_entry]
+        body = {"person": {ROLES_KEY: updated_roles}}
+
+        print("\n── Step 2: PATCH body ──────────────────────────────────────────")
+        print(json.dumps(body, indent=2))
+
+        # Step 3: send PATCH and print full raw response
+        print("\n── Step 3: raw PATCH response ──────────────────────────────────")
+        time.sleep(0.5)
+        status, text = client.patch_raw("people/{}".format(KRISTIAN_ID), body)
+        print("  HTTP {}".format(status))
+        try:
+            print(json.dumps(json.loads(text), indent=2))
+        except Exception:
+            print(text[:1000])
+
+        # Step 4: re-fetch and print
+        print("\n── Step 4: record after PATCH ──────────────────────────────────")
+        time.sleep(0.5)
+        full2 = client.get("people/{}".format(KRISTIAN_ID))
+        if "_error" in full2:
+            print("❌ Re-fetch failed: {}".format(full2))
+        else:
+            print_roles(ROLES_KEY, full2)
         print()
         return
 

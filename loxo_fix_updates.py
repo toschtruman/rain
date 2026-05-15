@@ -8,6 +8,7 @@ Updates Loxo people records (staffing instance: rain-global) from two CSVs:
                                    to "Roles Experienced in - Registration"
 
 Usage:
+  python loxo_fix_updates.py --discover       # print all custom fields for one person and exit
   python loxo_fix_updates.py --dry-run        # print what would happen, no API calls
   python loxo_fix_updates.py --limit 5        # process only first 5 rows of each CSV
   python loxo_fix_updates.py                  # run everything
@@ -134,7 +135,7 @@ def field_id(cf: dict):
     return cf.get("id") or cf.get("field_id") or cf.get("custom_field_id")
 
 
-def parse_roles(value) -> list[str]:
+def parse_roles(value) -> list:
     """Parse roles that may be a list, comma-separated string, or None."""
     if not value:
         return []
@@ -151,10 +152,80 @@ def roles_to_original_type(roles: list, original_value) -> Union[list, str]:
 
 
 # ---------------------------------------------------------------------------
+# --discover mode
+# ---------------------------------------------------------------------------
+
+def run_discover(client: LoxoStaffingClient):
+    """Fetch a real person and print every custom field label, id, type, and value."""
+
+    def print_fields(person: dict):
+        name = "{} {}".format(person.get("first_name", ""), person.get("last_name", "")).strip()
+        pid = person.get("id", "?")
+        print("\n" + "=" * 70)
+        print("Person: {}  (id={})".format(name, pid))
+        print("=" * 70)
+        cfs = person.get("custom_fields") or []
+        if not cfs:
+            print("  ⚠️  No custom_fields key found on this record.")
+            print("  Top-level keys:", list(person.keys()))
+            return
+        print("  {} custom field(s):\n".format(len(cfs)))
+        for i, cf in enumerate(cfs, 1):
+            label = _cf_label(cf) or "(no label)"
+            fid   = cf.get("id") or cf.get("field_id") or cf.get("custom_field_id") or "(no id)"
+            ftype = cf.get("field_type") or cf.get("type") or "(unknown)"
+            value = str(cf.get("value", ""))[:80]
+            print("  [{:03d}] {:<45s} id={:<10s} type={:<20s} value={!r}".format(
+                i, label, str(fid), ftype, value))
+
+    print("\n🔍 DISCOVER MODE\n", flush=True)
+
+    # Pull the first person from the list endpoint
+    raw = client.get("people", {"per_page": 1})
+    if "_error" in raw:
+        print("❌ GET /people failed:", raw)
+        sys.exit(1)
+    people = raw if isinstance(raw, list) else raw.get("people", raw.get("candidates", raw.get("data", [])))
+    if not people:
+        print("❌ No people returned from /people.")
+        sys.exit(1)
+
+    stub = people[0]
+    pid = stub.get("id")
+    print("  Fetching full record for person id={} ...".format(pid), flush=True)
+    full = client.get_person(pid)
+    if "_error" in full:
+        print("❌ Could not fetch person {}: {}".format(pid, full))
+        sys.exit(1)
+    print_fields(full)
+
+    # Also look up the first email from the Willo CSV for a more representative sample
+    if WILLO_CSV.exists():
+        with open(WILLO_CSV, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        if rows:
+            sample_email = (rows[0].get("Email") or "").strip()
+            if sample_email:
+                print("\n  Also fetching first Willo CSV person: {} ...".format(sample_email), flush=True)
+                p2 = client.find_person_by_email(sample_email)
+                if p2 and "_error" not in p2:
+                    full2 = client.get_person(p2["id"])
+                    if "_error" not in full2:
+                        print_fields(full2)
+                    else:
+                        print("  ⚠️  Could not fetch full record:", full2)
+                else:
+                    print("  ⚠️  Person not found for:", sample_email)
+
+    print("\n✅ Discovery complete. Confirm field labels above match '{}' and '{}'.\n".format(
+        WILLO_FIELD_LABEL, ROLES_FIELD_LABEL))
+
+
+# ---------------------------------------------------------------------------
 # Failure log
 # ---------------------------------------------------------------------------
 
-_failures: list[dict] = []
+_failures = []  # type: list
 
 
 def log_fail(task: str, name: str, email: str, reason: str):
@@ -340,6 +411,8 @@ def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[in
 
 def main():
     parser = argparse.ArgumentParser(description="Update Loxo people records from CSVs.")
+    parser.add_argument("--discover", action="store_true",
+                        help="Print all custom fields for one person and exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would happen without making any API calls")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -353,6 +426,10 @@ def main():
         sys.exit(1)
 
     client = LoxoStaffingClient(api_key)
+
+    if args.discover:
+        run_discover(client)
+        return
 
     if args.dry_run:
         print("\n🔎 DRY RUN MODE — no API calls will be made\n")

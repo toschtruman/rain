@@ -10,6 +10,7 @@ Updates Loxo people records (staffing instance: rain-global) from two CSVs:
 
 Usage:
   python loxo_fix_updates.py --discover          # print custom_* fields for sample people
+  python loxo_fix_updates.py --debug EMAIL       # inspect one person's match and current field values
   python loxo_fix_updates.py --dry-run           # print what would happen, no API calls
   python loxo_fix_updates.py --dry-run --limit 3 # dry-run first 3 rows
   python loxo_fix_updates.py --limit 3           # live test on 3 rows
@@ -191,6 +192,65 @@ def write_failures():
 # ---------------------------------------------------------------------------
 # --discover mode
 # ---------------------------------------------------------------------------
+
+def run_debug(client: LoxoStaffingClient, email: str):
+    """For a single email: show search result, person id, and current custom_text_1."""
+    print("\n🔍 DEBUG: {!r}\n".format(email), flush=True)
+
+    print("  1. Searching /people?query={} ...".format(email))
+    raw = client.get("people", {"query": email.strip()})
+    if "_error" in raw:
+        print("     ❌ Search failed: {}".format(raw))
+        return
+
+    people = (
+        raw if isinstance(raw, list)
+        else raw.get("people", raw.get("candidates", raw.get("data", [])))
+    )
+    print("     → {} result(s) returned".format(len(people) if people else 0))
+    if not people:
+        print("     ❌ No person found for this email.")
+        return
+
+    # Show all results so we can spot the right one
+    for i, p in enumerate(people):
+        if not isinstance(p, dict):
+            continue
+        print("     result[{}]: id={!r}  email={!r}  name={!r}".format(
+            i,
+            p.get("id"),
+            p.get("email"),
+            "{} {}".format(p.get("first_name", ""), p.get("last_name", "")).strip(),
+        ))
+
+    # Pick exact match or first
+    match = None
+    for p in people:
+        if isinstance(p, dict) and (p.get("email") or "").strip().lower() == email.strip().lower():
+            match = p
+            break
+    if match is None:
+        match = people[0]
+        print("     ⚠️  No exact email match — using result[0]")
+
+    pid = match.get("id")
+    print("\n  2. Person found: id={}".format(pid))
+    print("     Loxo email on record: {!r}".format(match.get("email")))
+
+    print("\n  3. Fetching full record for id={} ...".format(pid))
+    full = client.get_person(pid)
+    if "_error" in full:
+        print("     ❌ Could not fetch: {}".format(full))
+        return
+
+    print("     id={}, name={!r}".format(
+        full.get("id"),
+        "{} {}".format(full.get("first_name", ""), full.get("last_name", "")).strip(),
+    ))
+
+    print("\n  4. Current {}: {!r}".format(WILLO_KEY, full.get(WILLO_KEY)))
+    print()
+
 
 def run_discover(client: LoxoStaffingClient):
     """Print all non-empty custom_* keys for a sample person."""
@@ -402,6 +462,8 @@ def main():
     parser = argparse.ArgumentParser(description="Update Loxo people records from CSVs.")
     parser.add_argument("--discover", action="store_true",
                         help="Print non-empty custom_* fields for sample people and exit")
+    parser.add_argument("--debug", metavar="EMAIL",
+                        help="Inspect search result and current field values for one email")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would happen without making any API calls")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -418,6 +480,10 @@ def main():
 
     if args.discover:
         run_discover(client)
+        return
+
+    if args.debug:
+        run_debug(client, args.debug)
         return
 
     if args.dry_run:

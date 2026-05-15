@@ -8,13 +8,16 @@ Updates Loxo people records (staffing instance: rain-global) from two CSVs:
                                    to custom_hierarchy_13 (Roles Experienced
                                    in - Registration)
 
+Person lookup uses a local Loxo export CSV (not the search API, which
+returns email=None and can't be matched). The export is matched against
+the Email, Personal Email, and Work Email columns.
+
 Usage:
-  python loxo_fix_updates.py --discover          # print custom_* fields for sample people
-  python loxo_fix_updates.py --debug EMAIL       # inspect one person's match and current field values
-  python loxo_fix_updates.py --dry-run           # print what would happen, no API calls
-  python loxo_fix_updates.py --dry-run --limit 3 # dry-run first 3 rows
-  python loxo_fix_updates.py --limit 3           # live test on 3 rows
-  python loxo_fix_updates.py                     # run everything
+  python loxo_fix_updates.py --export people.csv --discover
+  python loxo_fix_updates.py --export people.csv --debug EMAIL
+  python loxo_fix_updates.py --export people.csv --dry-run --limit 3
+  python loxo_fix_updates.py --export people.csv --limit 3
+  python loxo_fix_updates.py --export people.csv
 
 Requires: LOXO_RAIN_STAFFING_API_KEY in environment or .env file.
 """
@@ -40,15 +43,54 @@ STAFFING_BASE_URL = "https://rain-global.app.loxo.co/api/rain-global/"
 API_KEY_ENV = "LOXO_RAIN_STAFFING_API_KEY"
 
 HERE = Path(__file__).parent
-WILLO_CSV = HERE / "willo-fixes.csv"
-CS_CSV    = HERE / "customer-support-fixes.csv"
+WILLO_CSV    = HERE / "willo-fixes.csv"
+CS_CSV       = HERE / "customer-support-fixes.csv"
 FAILURES_CSV = HERE / "failures.csv"
 
 RATE_LIMIT_SLEEP = 0.5  # seconds between API calls
 
-WILLO_KEY  = "custom_text_1"          # Willo interview URL
-ROLES_KEY  = "custom_hierarchy_13"    # Roles Experienced in - Registration
-NEW_ROLE   = "Customer Support/Customer Care"
+WILLO_KEY = "custom_text_1"        # Willo interview URL
+ROLES_KEY = "custom_hierarchy_13"  # Roles Experienced in - Registration
+NEW_ROLE  = "Customer Support/Customer Care"
+
+# Columns in the Loxo export that may contain an email address
+EXPORT_EMAIL_COLS = ["Email", "Personal Email", "Work Email"]
+
+
+# ---------------------------------------------------------------------------
+# Export CSV → email-to-id lookup
+# ---------------------------------------------------------------------------
+
+def load_export(export_path: Path) -> Dict[str, str]:
+    """
+    Read the Loxo people export CSV and return a dict of
+    { normalised_email: loxo_person_id } built from all three
+    email columns (Email, Personal Email, Work Email).
+    Later rows win on collision so the most recent export row is used.
+    """
+    if not export_path.exists():
+        print("❌ Export CSV not found: {}".format(export_path))
+        sys.exit(1)
+
+    lookup = {}  # type: Dict[str, str]
+    with open(export_path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            pid = (row.get("Id") or "").strip()
+            if not pid:
+                continue
+            for col in EXPORT_EMAIL_COLS:
+                email = (row.get(col) or "").strip().lower()
+                if email:
+                    lookup[email] = pid
+
+    print("📋 Loaded export: {} unique email→id mappings from {}".format(
+        len(lookup), export_path.name))
+    return lookup
+
+
+def lookup_id(email: str, export: Dict[str, str]) -> Optional[str]:
+    return export.get(email.strip().lower())
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +102,7 @@ class LoxoStaffingClient:
         self.base_url = STAFFING_BASE_URL
         self.session = requests.Session()
         self.session.headers.update({
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": "Bearer {}".format(api_key),
             "Content-Type": "application/json",
         })
 
@@ -85,33 +127,12 @@ class LoxoStaffingClient:
         except Exception:
             return {"_error": "bad_json", "detail": resp.text[:400]}
 
-    def find_person_by_email(self, email: str) -> Optional[dict]:
-        """Search /people?query=email; return exact match or first result."""
-        time.sleep(RATE_LIMIT_SLEEP)
-        raw = self.get("people", {"query": email.strip()})
-        if "_error" in raw:
-            return raw
-        people = (
-            raw if isinstance(raw, list)
-            else raw.get("people", raw.get("candidates", raw.get("data", [])))
-        )
-        if not people:
-            return None
-        for p in people:
-            if isinstance(p, dict):
-                if (p.get("email") or "").strip().lower() == email.strip().lower():
-                    return p
-        return people[0] if isinstance(people[0], dict) else None
-
     def get_person(self, person_id) -> dict:
-        """Fetch full person record."""
         time.sleep(RATE_LIMIT_SLEEP)
         return self.get("people/{}".format(person_id))
 
     def get_hierarchy_options(self, hierarchy_id: int) -> dict:
-        """Fetch all options for a hierarchy field."""
         time.sleep(RATE_LIMIT_SLEEP)
-        # Try the most common Loxo endpoint patterns
         for path in (
             "hierarchies/{}".format(hierarchy_id),
             "hierarchy_items?hierarchy_id={}".format(hierarchy_id),
@@ -120,7 +141,8 @@ class LoxoStaffingClient:
             result = self.get(path)
             if "_error" not in result:
                 return result
-        return {"_error": "not_found", "detail": "No hierarchy endpoint responded for id={}".format(hierarchy_id)}
+        return {"_error": "not_found",
+                "detail": "No hierarchy endpoint responded for id={}".format(hierarchy_id)}
 
 
 # ---------------------------------------------------------------------------
@@ -128,19 +150,13 @@ class LoxoStaffingClient:
 # ---------------------------------------------------------------------------
 
 def find_cs_role_id(client: LoxoStaffingClient) -> Optional[int]:
-    """
-    Fetch hierarchy options for ROLES_KEY and return the integer id
-    that corresponds to NEW_ROLE ("Customer Support/Customer Care").
-    """
-    # Extract the numeric id from e.g. "custom_hierarchy_13" -> 13
+    """Return the hierarchy item id for NEW_ROLE, or None if not found."""
     hierarchy_id = int(ROLES_KEY.split("_")[-1])
     raw = client.get_hierarchy_options(hierarchy_id)
-
     if "_error" in raw:
         print("  ⚠️  Could not fetch hierarchy options: {}".format(raw))
         return None
 
-    # The response may be a list directly, or nested under a key
     items = raw if isinstance(raw, list) else (
         raw.get("hierarchy_items")
         or raw.get("items")
@@ -148,20 +164,14 @@ def find_cs_role_id(client: LoxoStaffingClient) -> Optional[int]:
         or raw.get("data")
         or []
     )
-
     for item in items:
         if not isinstance(item, dict):
             continue
-        label = (
-            item.get("value")
-            or item.get("name")
-            or item.get("label")
-            or ""
-        ).strip()
+        label = (item.get("value") or item.get("name") or item.get("label") or "").strip()
         if label.lower() == NEW_ROLE.lower():
             return item.get("id")
 
-    print("  ⚠️  '{}' not found in hierarchy options. Raw sample: {}".format(
+    print("  ⚠️  '{}' not found in hierarchy options. Sample: {}".format(
         NEW_ROLE, str(items[:3])))
     return None
 
@@ -190,75 +200,46 @@ def write_failures():
 
 
 # ---------------------------------------------------------------------------
-# --discover mode
+# --debug mode
 # ---------------------------------------------------------------------------
 
-def run_debug(client: LoxoStaffingClient, email: str):
-    """For a single email: show search result, person id, and current custom_text_1."""
-    print("\n🔍 DEBUG: {!r}\n".format(email), flush=True)
+def run_debug(client: LoxoStaffingClient, export: Dict[str, str], email: str):
+    print("\n🔍 DEBUG: {!r}\n".format(email))
 
-    print("  1. Searching /people?query={} ...".format(email))
-    raw = client.get("people", {"query": email.strip()})
-    if "_error" in raw:
-        print("     ❌ Search failed: {}".format(raw))
+    pid = lookup_id(email, export)
+    print("  1. Search email : {!r}".format(email))
+    print("  2. Export lookup: {}".format(
+        "id={}".format(pid) if pid else "❌ NOT FOUND in export CSV"))
+
+    if not pid:
+        print("\n  ⚠️  Email not in export — check spelling or try Personal/Work Email columns.")
         return
 
-    people = (
-        raw if isinstance(raw, list)
-        else raw.get("people", raw.get("candidates", raw.get("data", [])))
-    )
-    print("     → {} result(s) returned".format(len(people) if people else 0))
-    if not people:
-        print("     ❌ No person found for this email.")
-        return
-
-    # Show all results so we can spot the right one
-    for i, p in enumerate(people):
-        if not isinstance(p, dict):
-            continue
-        print("     result[{}]: id={!r}  email={!r}  name={!r}".format(
-            i,
-            p.get("id"),
-            p.get("email"),
-            "{} {}".format(p.get("first_name", ""), p.get("last_name", "")).strip(),
-        ))
-
-    # Pick exact match or first
-    match = None
-    for p in people:
-        if isinstance(p, dict) and (p.get("email") or "").strip().lower() == email.strip().lower():
-            match = p
-            break
-    if match is None:
-        match = people[0]
-        print("     ⚠️  No exact email match — using result[0]")
-
-    pid = match.get("id")
-    print("\n  2. Person found: id={}".format(pid))
-    print("     Loxo email on record: {!r}".format(match.get("email")))
-
-    print("\n  3. Fetching full record for id={} ...".format(pid))
+    print("  3. Fetching /people/{} ...".format(pid))
     full = client.get_person(pid)
     if "_error" in full:
         print("     ❌ Could not fetch: {}".format(full))
         return
 
-    print("     id={}, name={!r}".format(
+    print("     id={}, name={!r}, loxo email={!r}".format(
         full.get("id"),
         "{} {}".format(full.get("first_name", ""), full.get("last_name", "")).strip(),
+        full.get("email"),
     ))
-
-    print("\n  4. Current {}: {!r}".format(WILLO_KEY, full.get(WILLO_KEY)))
+    print("  4. Current {}: {!r}".format(WILLO_KEY, full.get(WILLO_KEY)))
     print()
 
 
-def run_discover(client: LoxoStaffingClient):
+# ---------------------------------------------------------------------------
+# --discover mode
+# ---------------------------------------------------------------------------
+
+def run_discover(client: LoxoStaffingClient, export: Dict[str, str]):
     """Print all non-empty custom_* keys for a sample person."""
 
     def print_custom(person: dict):
         name = "{} {}".format(
-            person.get("first_name", ""), person.get("last_name", "")
-        ).strip()
+            person.get("first_name", ""), person.get("last_name", "")).strip()
         print("\n" + "=" * 70)
         print("Person: {}  (id={})".format(name, person.get("id", "?")))
         print("=" * 70)
@@ -267,42 +248,39 @@ def run_discover(client: LoxoStaffingClient):
         if not custom:
             print("  ⚠️  No non-empty custom_* keys found.")
             print("  All keys:", list(person.keys()))
+            return
         for key in sorted(custom):
             print("  {}: {!r}".format(key, custom[key]))
 
     print("\n🔍 DISCOVER MODE\n", flush=True)
 
-    raw = client.get("people", {"per_page": 1})
-    if "_error" in raw:
-        print("❌ GET /people failed:", raw)
-        sys.exit(1)
-    people = raw if isinstance(raw, list) else raw.get("people", raw.get("candidates", raw.get("data", [])))
-    if not people:
-        print("❌ No people returned.")
-        sys.exit(1)
-
-    full = client.get_person(people[0]["id"])
+    # Pick the first id in the export and fetch it
+    if not export:
+        print("❌ Export is empty.")
+        return
+    sample_id = next(iter(export.values()))
+    full = client.get_person(sample_id)
     if "_error" in full:
-        print("❌ Could not fetch person:", full)
-        sys.exit(1)
+        print("❌ Could not fetch person {}: {}".format(sample_id, full))
+        return
     print_custom(full)
 
+    # Also fetch the first person from willo-fixes.csv
     if WILLO_CSV.exists():
         with open(WILLO_CSV, newline="", encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
         if rows:
             sample_email = (rows[0].get("Email") or "").strip()
-            if sample_email:
-                print("\n  Fetching Willo CSV sample person: {} ...".format(sample_email))
-                p2 = client.find_person_by_email(sample_email)
-                if p2 and "_error" not in p2:
-                    full2 = client.get_person(p2["id"])
-                    if "_error" not in full2:
-                        print_custom(full2)
-                    else:
-                        print("  ⚠️  Could not fetch full record:", full2)
+            pid = lookup_id(sample_email, export)
+            if pid:
+                print("\n  Fetching Willo CSV sample ({}) ...".format(sample_email))
+                full2 = client.get_person(pid)
+                if "_error" not in full2:
+                    print_custom(full2)
                 else:
-                    print("  ⚠️  Not found:", sample_email)
+                    print("  ⚠️  Could not fetch: {}".format(full2))
+            else:
+                print("\n  ⚠️  {} not found in export".format(sample_email))
 
     print("\n✅ Discovery complete.\n")
 
@@ -311,7 +289,8 @@ def run_discover(client: LoxoStaffingClient):
 # Task 1: Willo URL updates  (custom_text_1)
 # ---------------------------------------------------------------------------
 
-def run_willo_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[int]):
+def run_willo_updates(client: LoxoStaffingClient, export: Dict[str, str],
+                      dry_run: bool, limit: Optional[int]):
     if not WILLO_CSV.exists():
         print("❌ CSV not found: {}".format(WILLO_CSV))
         return
@@ -336,21 +315,16 @@ def run_willo_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional
             print("  ⚠️  Skipping — missing email or URL: {}".format(dict(row)))
             continue
 
+        pid = lookup_id(email, export)
+        if not pid:
+            log_fail("willo", name, email, "Email not found in export CSV")
+            continue
+
         if dry_run:
-            print("  🔎 [DRY RUN] {} ({})".format(name, email))
+            print("  🔎 [DRY RUN] {} ({}) id={}".format(name, email, pid))
             print("           → {} = {!r}".format(WILLO_KEY, willo_url))
             continue
 
-        person = client.find_person_by_email(email)
-        if person is None:
-            log_fail("willo", name, email, "Person not found by email")
-            continue
-        if "_error" in person:
-            log_fail("willo", name, email, "Search error {}: {}".format(
-                person["_error"], person.get("detail", "")))
-            continue
-
-        pid = person.get("id")
         time.sleep(RATE_LIMIT_SLEEP)
         result = client.patch("people/{}".format(pid), {
             "person": {WILLO_KEY: willo_url}
@@ -359,15 +333,16 @@ def run_willo_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional
             log_fail("willo", name, email, "PATCH {}: {}".format(
                 result["_error"], result.get("detail", "")))
         else:
-            print("  ✅ Updated {} — {} = {!r}".format(name, WILLO_KEY, willo_url))
+            print("  ✅ Updated {} (id={}) — {} = {!r}".format(
+                name, pid, WILLO_KEY, willo_url))
 
 
 # ---------------------------------------------------------------------------
 # Task 2: Customer Support role additions  (custom_hierarchy_13)
 # ---------------------------------------------------------------------------
 
-def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[int],
-                   cs_role_id: Optional[int]):
+def run_cs_updates(client: LoxoStaffingClient, export: Dict[str, str],
+                   dry_run: bool, limit: Optional[int], cs_role_id: Optional[int]):
     if not CS_CSV.exists():
         print("❌ CSV not found: {}".format(CS_CSV))
         return
@@ -382,14 +357,12 @@ def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[in
     print("=" * 70 + "\n")
 
     if not dry_run and cs_role_id is None:
-        print("  ❌ Cannot run Task 2: hierarchy id for '{}' not found. "
-              "All rows will be skipped.".format(NEW_ROLE))
+        print("  ❌ Cannot run Task 2: hierarchy id for '{}' not resolved.".format(NEW_ROLE))
         for row in rows:
             email = (row.get("Email") or "").strip()
             name  = "{} {}".format(
                 (row.get("First Name") or "").strip(),
-                (row.get("Last Name") or "").strip()
-            ).strip()
+                (row.get("Last Name") or "").strip()).strip()
             log_fail("customer_support", name, email,
                      "Hierarchy id for '{}' could not be resolved".format(NEW_ROLE))
         return
@@ -404,42 +377,33 @@ def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[in
             print("  ⚠️  Skipping — missing email: {}".format(dict(row)))
             continue
 
+        pid = lookup_id(email, export)
+        if not pid:
+            log_fail("customer_support", name, email, "Email not found in export CSV")
+            continue
+
         if dry_run:
-            print("  🔎 [DRY RUN] {} ({})".format(name, email))
+            print("  🔎 [DRY RUN] {} ({}) id={}".format(name, email, pid))
             print("           → append {{'id': {}, 'value': {!r}}} to {}".format(
                 cs_role_id or "<??>", NEW_ROLE, ROLES_KEY))
             continue
 
-        # Find person
-        person = client.find_person_by_email(email)
-        if person is None:
-            log_fail("customer_support", name, email, "Person not found by email")
-            continue
-        if "_error" in person:
-            log_fail("customer_support", name, email, "Search error {}: {}".format(
-                person["_error"], person.get("detail", "")))
-            continue
-
-        pid = person.get("id")
-
-        # Fetch full record to get current roles array
+        # Fetch full record to get current roles
         full = client.get_person(pid)
         if "_error" in full:
-            log_fail("customer_support", name, email, "Could not fetch person {}: {}".format(
-                pid, full.get("detail", "")))
+            log_fail("customer_support", name, email,
+                     "Could not fetch person {}: {}".format(pid, full.get("detail", "")))
             continue
 
         current_roles = full.get(ROLES_KEY) or []
         if not isinstance(current_roles, list):
             current_roles = []
 
-        # Skip if already present
         if any(r.get("id") == cs_role_id for r in current_roles if isinstance(r, dict)):
             print("  ⏭️  Skipped {} — '{}' already present".format(name, NEW_ROLE))
             continue
 
-        new_entry = {"id": cs_role_id, "value": NEW_ROLE}
-        updated_roles = current_roles + [new_entry]
+        updated_roles = current_roles + [{"id": cs_role_id, "value": NEW_ROLE}]
 
         time.sleep(RATE_LIMIT_SLEEP)
         result = client.patch("people/{}".format(pid), {
@@ -450,8 +414,8 @@ def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[in
                 result["_error"], result.get("detail", "")))
         else:
             old_labels = [r.get("value", "") for r in current_roles if isinstance(r, dict)]
-            print("  ✅ Updated {} — appended '{}' (had {} role(s))".format(
-                name, NEW_ROLE, len(old_labels)))
+            print("  ✅ Updated {} (id={}) — appended '{}' (had {} role(s))".format(
+                name, pid, NEW_ROLE, len(old_labels)))
 
 
 # ---------------------------------------------------------------------------
@@ -460,10 +424,12 @@ def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[in
 
 def main():
     parser = argparse.ArgumentParser(description="Update Loxo people records from CSVs.")
+    parser.add_argument("--export", required=True, metavar="FILE",
+                        help="Path to the Loxo people export CSV (used for email→id lookup)")
     parser.add_argument("--discover", action="store_true",
                         help="Print non-empty custom_* fields for sample people and exit")
     parser.add_argument("--debug", metavar="EMAIL",
-                        help="Inspect search result and current field values for one email")
+                        help="Inspect export lookup and current field values for one email")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would happen without making any API calls")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -476,31 +442,33 @@ def main():
         print("   Add it to a .env file in the project root or export it in your shell.")
         sys.exit(1)
 
+    export = load_export(Path(args.export))
     client = LoxoStaffingClient(api_key)
 
     if args.discover:
-        run_discover(client)
+        run_discover(client, export)
         return
 
     if args.debug:
-        run_debug(client, args.debug)
+        run_debug(client, export, args.debug)
         return
 
     if args.dry_run:
         print("\n🔎 DRY RUN MODE — no API calls will be made\n")
 
-    # Resolve "Customer Support/Customer Care" hierarchy id once up front
+    # Resolve CS role hierarchy id once up front
     cs_role_id = None
     if not args.dry_run:
         print("🔍 Looking up hierarchy id for '{}' ...".format(NEW_ROLE), flush=True)
         cs_role_id = find_cs_role_id(client)
         if cs_role_id is None:
-            print("  ⚠️  Could not resolve hierarchy id — Task 2 rows will be logged as failures.")
+            print("  ⚠️  Could not resolve — Task 2 rows will be logged as failures.")
         else:
             print("  ✅ Found id={} for '{}'\n".format(cs_role_id, NEW_ROLE))
 
-    run_willo_updates(client, dry_run=args.dry_run, limit=args.limit)
-    run_cs_updates(client, dry_run=args.dry_run, limit=args.limit, cs_role_id=cs_role_id)
+    run_willo_updates(client, export, dry_run=args.dry_run, limit=args.limit)
+    run_cs_updates(client, export, dry_run=args.dry_run, limit=args.limit,
+                   cs_role_id=cs_role_id)
 
     if not args.dry_run:
         write_failures()

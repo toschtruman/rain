@@ -160,6 +160,8 @@ def main():
                         help="Fetch and print Kristian's current custom_hierarchy_13 from the API")
     parser.add_argument("--debug-patch", action="store_true",
                         help="Fetch current roles, PATCH with existing+CS role, print raw response, re-fetch to confirm")
+    parser.add_argument("--probe-hierarchy", action="store_true",
+                        help="Hit candidate endpoints to find the correct hierarchy option IDs")
     args = parser.parse_args()
 
     api_key = os.environ.get(API_KEY_ENV)
@@ -185,6 +187,39 @@ def main():
                 print("    {{'id': {}, 'value': {!r}}}".format(
                     entry.get("id"), entry.get("value")))
         print()
+        return
+
+    if args.probe_hierarchy:
+        import json
+        PROBE_PATHS = [
+            "custom_fields",
+            "agency/custom_fields",
+            "hierarchies",
+            "hierarchies/13",
+            "custom_hierarchies",
+            "custom_hierarchies/13",
+            "hierarchy_items?hierarchy_id=13",
+            "hierarchy_options?field=custom_hierarchy_13",
+            "people/fields",
+            "fields",
+        ]
+        print("\n🔍 PROBE HIERARCHY — trying {} endpoint(s)\n".format(len(PROBE_PATHS)), flush=True)
+        for path in PROBE_PATHS:
+            url = STAFFING_BASE_URL + path
+            print("── GET {} ──".format(url))
+            try:
+                resp = client.session.get(url)
+                print("   HTTP {}".format(resp.status_code))
+                if resp.text.strip():
+                    try:
+                        print(json.dumps(resp.json(), indent=2)[:2000])
+                    except Exception:
+                        print(resp.text[:2000])
+                else:
+                    print("   (empty body)")
+            except Exception as e:
+                print("   ERROR: {}".format(e))
+            print()
         return
 
     if args.debug_patch:

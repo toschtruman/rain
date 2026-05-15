@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
+load_dotenv()  # loads .env from cwd or any parent directory
 
 # ---------------------------------------------------------------------------
 # Config

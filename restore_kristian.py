@@ -151,6 +151,8 @@ def main():
                         help="Path to the Loxo people export CSV")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the restore payload without making any API calls")
+    parser.add_argument("--verify", action="store_true",
+                        help="Fetch and print Kristian's current custom_hierarchy_13 from the API")
     args = parser.parse_args()
 
     api_key = os.environ.get(API_KEY_ENV)
@@ -159,6 +161,24 @@ def main():
         sys.exit(1)
 
     client = Client(api_key)
+
+    if args.verify:
+        print("\n🔍 Fetching current {} for Kristian (id={}) ...\n".format(
+            ROLES_KEY, KRISTIAN_ID), flush=True)
+        full = client.get("people/{}".format(KRISTIAN_ID))
+        if "_error" in full:
+            print("❌ Could not fetch: {}".format(full))
+            sys.exit(1)
+        roles = full.get(ROLES_KEY)
+        if not roles:
+            print("  {} is empty or missing on this record.".format(ROLES_KEY))
+        else:
+            print("  {} entry(s) in {}:\n".format(len(roles), ROLES_KEY))
+            for entry in roles:
+                print("    {{'id': {}, 'value': {!r}}}".format(
+                    entry.get("id"), entry.get("value")))
+        print()
+        return
 
     role_to_id = find_role_ids(client, Path(args.export))
 

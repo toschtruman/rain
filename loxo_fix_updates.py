@@ -343,15 +343,31 @@ def run_cs_updates(client: LoxoStaffingClient, export: Dict[str, str],
                      "Could not fetch person {}: {}".format(pid, full.get("detail", "")))
             continue
 
-        current_roles = full.get(ROLES_KEY) or []
+        current_roles = full.get(ROLES_KEY)
         if not isinstance(current_roles, list):
             current_roles = []
+
+        # Guard: if the API returned no roles but the CSV shows this person had
+        # roles, the API response is incomplete — patching would wipe their data.
+        csv_current = (row.get("Current Loxo Roles") or "").strip()
+        csv_has_roles = csv_current and csv_current.lower() != "nan"
+        if not current_roles and csv_has_roles:
+            print("  ⚠️  SKIPPED {} (id={}) — API returned empty {} but CSV shows "
+                  "existing roles: {!r}. Verify manually.".format(
+                      name, pid, ROLES_KEY, csv_current))
+            log_fail("customer_support", name, email,
+                     "API returned empty {} but CSV shows roles: {!r} — skipped to avoid wipeout".format(
+                         ROLES_KEY, csv_current))
+            continue
 
         if any(r.get("id") == cs_role_id for r in current_roles if isinstance(r, dict)):
             print("  ⏭️  Skipped {} — '{}' already present".format(name, NEW_ROLE))
             continue
 
         updated_roles = current_roles + [{"id": cs_role_id, "value": NEW_ROLE}]
+        print("       fetched {} existing role(s): {}".format(
+            len(current_roles),
+            [r.get("value") for r in current_roles if isinstance(r, dict)]))
 
         time.sleep(RATE_LIMIT_SLEEP)
         result = client.patch("people/{}".format(pid), {
@@ -362,8 +378,8 @@ def run_cs_updates(client: LoxoStaffingClient, export: Dict[str, str],
                 result["_error"], result.get("detail", "")))
         else:
             old_labels = [r.get("value", "") for r in current_roles if isinstance(r, dict)]
-            print("  ✅ Updated {} (id={}) — appended '{}' (had {} role(s))".format(
-                name, pid, NEW_ROLE, len(old_labels)))
+            print("  ✅ Updated {} (id={}) — appended '{}' (was: {})".format(
+                name, pid, NEW_ROLE, old_labels or "(none)"))
 
 
 # ---------------------------------------------------------------------------

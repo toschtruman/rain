@@ -162,6 +162,8 @@ def main():
                         help="Fetch current roles, PATCH with existing+CS role, print raw response, re-fetch to confirm")
     parser.add_argument("--probe-hierarchy", action="store_true",
                         help="Hit candidate endpoints to find the correct hierarchy option IDs")
+    parser.add_argument("--find-cs-id", action="store_true",
+                        help="Call GET /custom_fields/ and extract the correct id for Customer Support/Customer Care")
     args = parser.parse_args()
 
     api_key = os.environ.get(API_KEY_ENV)
@@ -220,6 +222,77 @@ def main():
             except Exception as e:
                 print("   ERROR: {}".format(e))
             print()
+        return
+
+    if args.find_cs_id:
+        import json
+        print("\n🔍 FIND CS ROLE ID via GET /custom_fields/ ...\n", flush=True)
+        resp = client.session.get(STAFFING_BASE_URL + "custom_fields/")
+        print("HTTP {}".format(resp.status_code))
+        if not resp.ok:
+            print("❌ Request failed: {}".format(resp.text[:400]))
+            sys.exit(1)
+        try:
+            data = resp.json()
+        except Exception:
+            print("❌ Could not parse JSON:\n{}".format(resp.text[:1000]))
+            sys.exit(1)
+
+        # data may be a list of fields or wrapped in a key
+        fields = data if isinstance(data, list) else (
+            data.get("custom_fields") or data.get("fields") or data.get("data") or []
+        )
+        print("Found {} field(s) total.\n".format(len(fields)))
+
+        # Find the field for custom_hierarchy_13
+        target = None
+        for f in fields:
+            if not isinstance(f, dict):
+                continue
+            # Match by api_key, key, name, or id==13
+            key  = (f.get("api_key") or f.get("key") or f.get("field_key") or "").lower()
+            name = (f.get("name") or f.get("label") or "").lower()
+            fid  = str(f.get("id") or "")
+            if key == "custom_hierarchy_13" or fid == "13" or "roles experienced" in name:
+                target = f
+                print("✅ Matched field: {}".format(json.dumps(f, indent=2)[:1000]))
+                break
+
+        if not target:
+            print("⚠️  Could not find custom_hierarchy_13 by key/id/name. Dumping all fields:\n")
+            print(json.dumps(fields, indent=2)[:4000])
+            sys.exit(1)
+
+        # Look for options / choices / values inside the field
+        options = (
+            target.get("options")
+            or target.get("choices")
+            or target.get("values")
+            or target.get("hierarchy_options")
+            or target.get("items")
+            or []
+        )
+        if not options:
+            print("\n⚠️  No options list found inside this field. Full field:\n")
+            print(json.dumps(target, indent=2))
+            sys.exit(1)
+
+        print("\n{} option(s) in this field:\n".format(len(options)))
+        found_id = None
+        for opt in options:
+            label = (opt.get("value") or opt.get("name") or opt.get("label") or "").strip()
+            oid   = opt.get("id")
+            marker = " ← TARGET" if label.lower() == NEW_ROLE.lower() else ""
+            print("  id={:<8} value={!r}{}".format(oid, label, marker))
+            if label.lower() == NEW_ROLE.lower():
+                found_id = oid
+
+        if found_id is not None:
+            print("\n✅ Correct id for '{}' = {}".format(NEW_ROLE, found_id))
+            print("   Update CS_ROLE_ID in loxo_fix_updates.py and restore_kristian.py to {}.".format(found_id))
+        else:
+            print("\n❌ '{}' not found in options list.".format(NEW_ROLE))
+        print()
         return
 
     if args.debug_patch:

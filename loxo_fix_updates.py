@@ -24,6 +24,7 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+from typing import Optional, Union
 
 load_dotenv()
 
@@ -80,7 +81,7 @@ class LoxoStaffingClient:
         except Exception:
             return {"_error": "bad_json", "detail": resp.text[:400]}
 
-    def find_person_by_email(self, email: str) -> dict | None:
+    def find_person_by_email(self, email: str) -> Optional[dict]:
         """Search for a person by email; return the first exact match or None."""
         time.sleep(RATE_LIMIT_SLEEP)
         raw = self.get("people", {"query": email.strip()})
@@ -120,7 +121,7 @@ def _cf_label(cf: dict) -> str:
     ).strip()
 
 
-def find_custom_field(person: dict, label: str) -> dict | None:
+def find_custom_field(person: dict, label: str) -> Optional[dict]:
     """Find a custom field by label (case-insensitive)."""
     for cf in person.get("custom_fields") or []:
         if isinstance(cf, dict) and _cf_label(cf).lower() == label.lower():
@@ -142,7 +143,7 @@ def parse_roles(value) -> list[str]:
     return [r.strip() for r in str(value).split(",") if r.strip()]
 
 
-def roles_to_original_type(roles: list[str], original_value) -> list | str:
+def roles_to_original_type(roles: list, original_value) -> Union[list, str]:
     """Return roles in the same type as the original value (list or comma string)."""
     if isinstance(original_value, list):
         return roles
@@ -176,7 +177,7 @@ def write_failures():
 # Task 1: Willo URL updates
 # ---------------------------------------------------------------------------
 
-def run_willo_updates(client: LoxoStaffingClient, dry_run: bool, limit: int | None):
+def run_willo_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[int]):
     if not WILLO_CSV.exists():
         print(f"❌ CSV not found: {WILLO_CSV}")
         return
@@ -251,7 +252,7 @@ def run_willo_updates(client: LoxoStaffingClient, dry_run: bool, limit: int | No
 # Task 2: Customer Support role additions
 # ---------------------------------------------------------------------------
 
-def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: int | None):
+def run_cs_updates(client: LoxoStaffingClient, dry_run: bool, limit: Optional[int]):
     if not CS_CSV.exists():
         print(f"❌ CSV not found: {CS_CSV}")
         return
